@@ -18,6 +18,7 @@ use winit::window::{Window, WindowId};
 use crate::backend::WinitBackend;
 use crate::glyph::GlyphCache;
 
+/// Target frame interval when the FPS cap is enabled (~62.5fps).
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const FONT_PX: f32 = 20.0;
 
@@ -43,18 +44,27 @@ struct App {
     sample_window_start: Instant,
     current_fps: f64,
     fps_history: VecDeque<u64>,
+    /// Toggled by pressing `c`. `Some(interval)` paces redraws to roughly
+    /// one every `interval`; `None` redraws as fast as the platform allows.
+    /// Capped by default - seeing the *uncapped* number is the reason this
+    /// is a toggle rather than always on.
+    fps_cap: Option<Duration>,
+    last_redraw: Instant,
 }
 
 impl Default for App {
     fn default() -> Self {
+        let now = Instant::now();
         App {
             window: None,
             terminal: None,
             show_fps: false,
             frames_since_sample: 0,
-            sample_window_start: Instant::now(),
+            sample_window_start: now,
             current_fps: 0.0,
             fps_history: VecDeque::with_capacity(FPS_HISTORY_LEN),
+            fps_cap: Some(FRAME_INTERVAL),
+            last_redraw: now,
         }
     }
 }
@@ -98,6 +108,28 @@ impl ApplicationHandler for App {
                 ..
             } if key.eq_ignore_ascii_case("f") => {
                 self.show_fps = !self.show_fps;
+                if self.show_fps {
+                    // Otherwise the first sample after enabling measures
+                    // against a `sample_window_start` that's however long
+                    // it's been since the counter was last on (or since
+                    // startup), producing one misleadingly-low bar.
+                    self.frames_since_sample = 0;
+                    self.sample_window_start = Instant::now();
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Character(key),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if key.eq_ignore_ascii_case("c") => {
+                self.fps_cap = match self.fps_cap {
+                    Some(_) => None,
+                    None => Some(FRAME_INTERVAL),
+                };
             }
             WindowEvent::Resized(_) => {
                 if let Some(terminal) = &mut self.terminal {
@@ -113,10 +145,34 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        if let Some(window) = &self.window {
-            window.request_redraw();
+        let now = Instant::now();
+
+        // `winit`/X11 apparently services a pending `request_redraw()`
+        // almost immediately regardless of `ControlFlow::WaitUntil` -
+        // confirmed by instrumenting this function: with an unconditional
+        // `request_redraw()` call here, it was re-entered every ~2-4ms
+        // instead of the ~16ms `FRAME_INTERVAL` asked for, because each
+        // redraw re-arms another one for the very next loop iteration.
+        // Gating the request on an explicit elapsed-time check (rather
+        // than trusting `WaitUntil` alone) sidesteps that: pacing becomes
+        // "did enough time pass" rather than "did the platform wake us at
+        // the requested moment", which is what makes the cap toggleable
+        // and correct either way.
+        let due = match self.fps_cap {
+            Some(interval) => now.duration_since(self.last_redraw) >= interval,
+            None => true,
+        };
+        if due {
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            self.last_redraw = now;
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + FRAME_INTERVAL));
+
+        event_loop.set_control_flow(match self.fps_cap {
+            Some(interval) => ControlFlow::WaitUntil(self.last_redraw + interval),
+            None => ControlFlow::Poll,
+        });
     }
 }
 
@@ -152,6 +208,11 @@ impl App {
         let show_fps = self.show_fps;
         let current_fps = self.current_fps;
         let fps_history = &self.fps_history;
+        let cap_label = if self.fps_cap.is_some() {
+            "capped"
+        } else {
+            "uncapped"
+        };
 
         terminal
             .draw(|frame| {
@@ -163,7 +224,10 @@ impl App {
                     ])
                     .areas(area);
                     let sparkline = Sparkline::default()
-                        .block(Block::bordered().title(format!("FPS: {current_fps:.1}")))
+                        .block(
+                            Block::bordered()
+                                .title(format!("FPS: {current_fps:.1} ({cap_label}, c to toggle)")),
+                        )
                         .data(fps_history.iter());
                     frame.render_widget(sparkline, fps_area);
                     rest
