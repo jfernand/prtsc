@@ -1,16 +1,20 @@
 //! Glyph rasterization and the monospace cell grid used to draw text into a
 //! raw pixel buffer.
 //!
-//! [`crate::glyph::GlyphCache`] rasterizes a fixed, known set of characters once up
-//! front — printable ASCII plus Braille Patterns — rather than rasterizing
-//! on demand, so drawing a frame never touches the font rasterizer.
+//! [`crate::glyph::GlyphCache`] rasterizes a fixed, known set of characters
+//! once up front — printable ASCII, Box Drawing, and Block Elements from the
+//! primary font, plus Braille Patterns from a fallback font — rather than
+//! rasterizing on demand, so drawing a frame never touches the font
+//! rasterizer. Any character requested outside those ranges falls back to
+//! `?` rather than panicking; see `PRIMARY_RANGES`/`FALLBACK_RANGES` for
+//! exactly what's covered, and extend them if a widget starts needing more
+//! (e.g. Geometric Shapes for scrollbar arrows).
 
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 
-/// Primary font: defines the monospace cell grid and covers printable
-/// ASCII, box drawing, block elements, and geometric shapes/arrows — every
-/// glyph ratatui's borders, gauges, sparklines, and scrollbars use.
+/// Primary font: defines the monospace cell grid. See `PRIMARY_RANGES` for
+/// which of its glyphs are actually rasterized into the cache.
 const PRIMARY_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
 
 /// Fallback font, consulted only for ranges the primary font doesn't cover.
@@ -19,7 +23,18 @@ const PRIMARY_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono
 /// patterns) that are inherently small relative to a terminal cell.
 const FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSans.ttf");
 
-const PRIMARY_RANGE: RangeInclusive<u32> = 0x20..=0x7E;
+/// Ranges rasterized from `PRIMARY_FONT_BYTES`. Printable ASCII, plus Box
+/// Drawing and Block Elements — used pervasively by ratatui's borders
+/// (`Block`), gauges, and sparklines/bar charts. Confirmed at
+/// `GlyphCache::new` time that the font actually has these (see the
+/// `lookup_glyph_index` check in the loop below); this list should stay in
+/// sync with whatever ranges the font-coverage check in the implementation
+/// plan verified.
+const PRIMARY_RANGES: &[RangeInclusive<u32>] = &[
+    0x20..=0x7E,     // Printable ASCII
+    0x2500..=0x257F, // Box Drawing
+    0x2580..=0x259F, // Block Elements
+];
 
 /// Ranges rasterized from `FALLBACK_FONT_BYTES`. Currently just Braille
 /// Patterns, used by ratatui's `Canvas` widget's Braille marker. Deliberately
@@ -34,6 +49,28 @@ const FALLBACK_CHAR: char = '?';
 struct Glyph {
     metrics: fontdue::Metrics,
     coverage: Vec<u8>,
+}
+
+/// Rasterizes every character in `ranges` that `font` actually has a glyph
+/// for at `px`, inserting into `glyphs`. Code points the font doesn't cover
+/// are silently skipped (rather than inserting `.notdef` boxes), so a range
+/// can be a little optimistic about coverage without corrupting the cache.
+fn rasterize_ranges(
+    font: &fontdue::Font,
+    ranges: &[RangeInclusive<u32>],
+    px: f32,
+    glyphs: &mut HashMap<char, Glyph>,
+) {
+    for range in ranges {
+        for cp in range.clone() {
+            let ch = char::from_u32(cp).expect("range is valid UTF-32");
+            if font.lookup_glyph_index(ch) == 0 {
+                continue;
+            }
+            let (metrics, coverage) = font.rasterize(ch, px);
+            glyphs.insert(ch, Glyph { metrics, coverage });
+        }
+    }
 }
 
 /// A row-major `0xAARRGGBB` pixel buffer, borrowed from the caller, with
@@ -117,21 +154,8 @@ impl GlyphCache {
                 .expect("embedded fallback font failed to parse");
 
         let mut glyphs = HashMap::new();
-        for cp in PRIMARY_RANGE {
-            let ch = char::from_u32(cp).expect("primary range is valid UTF-32");
-            let (metrics, coverage) = primary.rasterize(ch, px);
-            glyphs.insert(ch, Glyph { metrics, coverage });
-        }
-        for range in FALLBACK_RANGES {
-            for cp in range.clone() {
-                let ch = char::from_u32(cp).expect("fallback ranges are valid UTF-32");
-                if fallback.lookup_glyph_index(ch) == 0 {
-                    continue;
-                }
-                let (metrics, coverage) = fallback.rasterize(ch, px);
-                glyphs.insert(ch, Glyph { metrics, coverage });
-            }
-        }
+        rasterize_ranges(&primary, PRIMARY_RANGES, px, &mut glyphs);
+        rasterize_ranges(&fallback, FALLBACK_RANGES, px, &mut glyphs);
 
         let cell_width = glyphs[&FALLBACK_CHAR].metrics.advance_width.round() as usize;
 
