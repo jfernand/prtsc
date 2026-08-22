@@ -307,7 +307,8 @@ impl Backend for WinitBackend {
 
     fn flush(&mut self) -> Result<(), Self::Error> {
         // `draw` and `clear` already present a fully up-to-date frame
-        // every time they run, so there's nothing left to flush here.
+        // every time they run (see the `WinitBackend` docs for why that
+        // has to be unconditional), so there's nothing left to flush here.
         Ok(())
     }
 }
