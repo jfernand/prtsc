@@ -9,14 +9,21 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
-use crate::glyph::{self, Glyph};
+use crate::glyph::GlyphCache;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const FONT_PX: f32 = 20.0;
+
+const TEST_ROWS: [&str; 3] = [
+    "Hello, screencap! ~!@#$%^&*()_+",
+    "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "unicode fallback: 日本語 emoji: 🎉",
+];
 
 struct App {
     window: Option<Rc<Window>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
-    glyph: Glyph,
+    glyph_cache: GlyphCache,
 }
 
 impl Default for App {
@@ -24,7 +31,7 @@ impl Default for App {
         App {
             window: None,
             surface: None,
-            glyph: glyph::rasterize_test_glyph(),
+            glyph_cache: GlyphCache::new(FONT_PX),
         }
     }
 }
@@ -106,7 +113,8 @@ impl App {
             .buffer_mut()
             .expect("failed to get softbuffer buffer");
         buffer.fill(0xFF000000);
-        glyph::blit_glyph(&mut buffer, width, height, &self.glyph, 20, 20);
+        self.glyph_cache
+            .draw_grid(&mut buffer, width, height, &TEST_ROWS, 10, 10);
         buffer
             .present()
             .expect("failed to present softbuffer buffer");

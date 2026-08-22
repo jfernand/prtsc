@@ -1,22 +1,87 @@
-const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
-const GLYPH_PX: f32 = 32.0;
-const TEST_CHAR: char = 'A';
+use std::collections::HashMap;
 
-pub struct Glyph {
+const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
+
+/// Drawn in place of any character outside the cached printable-ASCII range.
+const FALLBACK_CHAR: char = '?';
+
+struct Glyph {
     metrics: fontdue::Metrics,
     coverage: Vec<u8>,
 }
 
-pub fn rasterize_test_glyph() -> Glyph {
-    let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
-        .expect("embedded font failed to parse");
-    let (metrics, coverage) = font.rasterize(TEST_CHAR, GLYPH_PX);
-    Glyph { metrics, coverage }
+/// Printable-ASCII glyphs rasterized once at a fixed pixel size, plus the
+/// monospace cell geometry derived from the font's own metrics.
+pub struct GlyphCache {
+    glyphs: HashMap<char, Glyph>,
+    baseline: i32,
+    pub cell_width: usize,
+    pub cell_height: usize,
+}
+
+impl GlyphCache {
+    pub fn new(px: f32) -> Self {
+        let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
+            .expect("embedded font failed to parse");
+
+        let mut glyphs = HashMap::new();
+        for byte in 0x20u8..=0x7E {
+            let ch = byte as char;
+            let (metrics, coverage) = font.rasterize(ch, px);
+            glyphs.insert(ch, Glyph { metrics, coverage });
+        }
+
+        let cell_width = glyphs[&FALLBACK_CHAR].metrics.advance_width.round() as usize;
+
+        let line_metrics = font
+            .horizontal_line_metrics(px)
+            .expect("embedded font is missing horizontal line metrics");
+        let cell_height = line_metrics.new_line_size.round() as usize;
+        let baseline = line_metrics.ascent.round() as i32;
+
+        GlyphCache {
+            glyphs,
+            baseline,
+            cell_width,
+            cell_height,
+        }
+    }
+
+    fn glyph_for(&self, ch: char) -> &Glyph {
+        self.glyphs
+            .get(&ch)
+            .unwrap_or_else(|| &self.glyphs[&FALLBACK_CHAR])
+    }
+
+    /// Draws each element of `rows` as one line of monospace cells, top-left
+    /// corner at `(origin_x, origin_y)`. Characters not in the cache (e.g.
+    /// non-ASCII) are drawn as `FALLBACK_CHAR`.
+    pub fn draw_grid(
+        &self,
+        buf: &mut [u32],
+        buf_width: usize,
+        buf_height: usize,
+        rows: &[&str],
+        origin_x: i32,
+        origin_y: i32,
+    ) {
+        for (row, line) in rows.iter().enumerate() {
+            let cell_y = origin_y + (row * self.cell_height) as i32;
+            for (col, ch) in line.chars().enumerate() {
+                let glyph = self.glyph_for(ch);
+                let cell_x = origin_x + (col * self.cell_width) as i32;
+                let glyph_x = cell_x + glyph.metrics.xmin;
+                let glyph_y =
+                    cell_y + self.baseline - glyph.metrics.ymin - glyph.metrics.height as i32;
+                blit_glyph(buf, buf_width, buf_height, glyph, glyph_x, glyph_y);
+            }
+        }
+    }
 }
 
 /// Blits a single-channel coverage glyph as opaque white onto an opaque
 /// black `buf`, clipping at the buffer edges.
-pub fn blit_glyph(
+fn blit_glyph(
     buf: &mut [u32],
     buf_width: usize,
     buf_height: usize,
