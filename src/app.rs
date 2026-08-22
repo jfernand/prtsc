@@ -19,7 +19,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const FONT_PX: f32 = 20.0;
 
 const TEST_ROWS: [&str; 4] = [
-    "Hello, screencap! ~!@#$%^&*()_+",
+    "Hello, prtsc! ~!@#$%^&*()_+",
     "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     "unicode fallback: 日本語 emoji: 🎉",
     "braille: ⠁⠃⠉⠙⠑⠋⠛⠓⠊⠚ ⣿⡿⢿⣟⣯⣷",
@@ -43,7 +43,7 @@ impl Default for App {
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let attrs = Window::default_attributes().with_title("screencap");
+        let attrs = Window::default_attributes().with_title("prtsc");
         let window = Rc::new(
             event_loop
                 .create_window(attrs)
@@ -142,7 +142,7 @@ impl App {
 /// ```no_run
 /// // Opens a window and blocks until it's closed, so this is `no_run`
 /// // rather than an executed doctest.
-/// screencap::run();
+/// prtsc::run();
 /// ```
 pub fn run() {
     let event_loop = EventLoop::new().expect("failed to create event loop");

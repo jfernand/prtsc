@@ -2,7 +2,7 @@
 
 ## Goal
 
-Turn `screencap` into a self-contained binary that, when launched, opens its
+Turn `prtsc` into a self-contained binary that, when launched, opens its
 own native window (no external terminal emulator required), shows a ratatui
 TUI for picking a window from `xcap::Window::all()`, and captures the
 selected window on demand.

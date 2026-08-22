@@ -10,7 +10,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! screencap::run();
+//! prtsc::run();
 //! ```
 #![warn(missing_docs)]
 

@@ -43,7 +43,7 @@ struct Glyph {
 /// # Examples
 ///
 /// ```
-/// use screencap::glyph::GlyphCache;
+/// use prtsc::glyph::GlyphCache;
 ///
 /// let cache = GlyphCache::new(20.0);
 /// assert!(cache.cell_width > 0);
@@ -76,7 +76,7 @@ impl GlyphCache {
     /// # Examples
     ///
     /// ```
-    /// use screencap::glyph::GlyphCache;
+    /// use prtsc::glyph::GlyphCache;
     ///
     /// let cache = GlyphCache::new(20.0);
     /// ```
@@ -139,7 +139,7 @@ impl GlyphCache {
     /// # Examples
     ///
     /// ```
-    /// use screencap::glyph::GlyphCache;
+    /// use prtsc::glyph::GlyphCache;
     ///
     /// let cache = GlyphCache::new(20.0);
     /// let (width, height) = (200, 100);
