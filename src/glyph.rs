@@ -211,9 +211,53 @@ impl GlyphCache {
         fill_rect(buf, x0, y0, self.cell_width, self.cell_height, bg);
 
         let glyph = self.glyph_for(ch);
-        let glyph_x = x0 + glyph.metrics.xmin;
-        let glyph_y = y0 + self.baseline - glyph.metrics.ymin - glyph.metrics.height as i32;
-        blit_glyph(buf, glyph, glyph_x, glyph_y, fg, bg);
+        self.blit_glyph(buf, glyph, x0, y0, fg, bg);
+    }
+
+    /// Blits `glyph` into the cell whose top-left pixel is `(cell_x0,
+    /// cell_y0)`, blending `fg` over `bg` by the glyph's per-pixel coverage.
+    ///
+    /// Clips to the cell's own `cell_width` x `cell_height` rectangle, not
+    /// just the overall buffer's edges. Box-drawing and block-element
+    /// glyphs in particular are deliberately rasterized a couple of pixels
+    /// wider/taller than the nominal cell size in most fonts (so that,
+    /// drawn edge-to-edge without clipping, lines join seamlessly the way a
+    /// real terminal's glyph compositor expects) - left unclipped here,
+    /// that overdraw bleeds into whichever neighboring cell didn't happen
+    /// to get redrawn this frame, which cell wins depending on redraw
+    /// order. That showed up as gaps between sparkline bars intermittently
+    /// vanishing rather than as an obvious rendering bug.
+    fn blit_glyph(
+        &self,
+        buf: &mut PixelBuf<'_>,
+        glyph: &Glyph,
+        cell_x0: i32,
+        cell_y0: i32,
+        fg: (u8, u8, u8),
+        bg: (u8, u8, u8),
+    ) {
+        let glyph_x0 = cell_x0 + glyph.metrics.xmin;
+        let glyph_y0 = cell_y0 + self.baseline - glyph.metrics.ymin - glyph.metrics.height as i32;
+        let cell_x_max = cell_x0 + self.cell_width as i32;
+        let cell_y_max = cell_y0 + self.cell_height as i32;
+
+        for row in 0..glyph.metrics.height {
+            let y = glyph_y0 + row as i32;
+            if y < cell_y0 || y >= cell_y_max {
+                continue;
+            }
+            for col in 0..glyph.metrics.width {
+                let x = glyph_x0 + col as i32;
+                if x < cell_x0 || x >= cell_x_max {
+                    continue;
+                }
+                let coverage = glyph.coverage[row * glyph.metrics.width + col] as u32;
+                if coverage == 0 {
+                    continue;
+                }
+                buf.set(x, y, lerp(bg, fg, coverage));
+            }
+        }
     }
 }
 
@@ -230,29 +274,6 @@ fn fill_rect(
     for row in 0..height {
         for col in 0..width {
             buf.set(x0 + col as i32, y0 + row as i32, color);
-        }
-    }
-}
-
-/// Blits a single-channel coverage glyph, blending `fg` over `bg` by the
-/// glyph's per-pixel coverage (its own alpha), clipping at the buffer
-/// edges. Pixels with zero coverage are left untouched, since the caller is
-/// expected to have already filled the cell's background.
-fn blit_glyph(
-    buf: &mut PixelBuf<'_>,
-    glyph: &Glyph,
-    x0: i32,
-    y0: i32,
-    fg: (u8, u8, u8),
-    bg: (u8, u8, u8),
-) {
-    for row in 0..glyph.metrics.height {
-        for col in 0..glyph.metrics.width {
-            let coverage = glyph.coverage[row * glyph.metrics.width + col] as u32;
-            if coverage == 0 {
-                continue;
-            }
-            buf.set(x0 + col as i32, y0 + row as i32, lerp(bg, fg, coverage));
         }
     }
 }
