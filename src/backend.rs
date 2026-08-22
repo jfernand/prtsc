@@ -47,17 +47,33 @@ impl From<softbuffer::SoftBufferError> for BackendError {
 /// owns the window itself rather than talking to a terminal emulator over a
 /// PTY: [`Backend::draw`] translates each [`Cell`] into a filled background
 /// rectangle plus a rasterized glyph via [`GlyphCache`].
+///
+/// It keeps its own persistent CPU-side framebuffer (`pixels`) rather than
+/// drawing straight into whatever `softbuffer` hands back from
+/// `buffer_mut()`. Several `softbuffer` backends (Wayland in particular)
+/// hand out one of a rotating pair of buffers and swap on `present()` — if
+/// only the cells ratatui says changed are redrawn each frame, an
+/// empty-diff frame still presents the *other* buffer, which was never
+/// repainted and may hold stale or uninitialized content from two frames
+/// ago. That alternation between an up-to-date and a stale buffer is what
+/// showed up as flicker. Keeping one always-fully-correct logical
+/// framebuffer and copying it whole into whichever physical buffer is
+/// handed back avoids the problem regardless of how many buffers the
+/// platform rotates through.
 pub struct WinitBackend {
     window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     glyph_cache: GlyphCache,
+    pixels: Vec<u32>,
+    pixel_size: (usize, usize),
     cursor_position: Position,
     cursor_visible: bool,
 }
 
 impl WinitBackend {
     /// Wraps `window` in a new backend, creating its `softbuffer` surface
-    /// and sizing it to the window's current inner size.
+    /// and sizing it (and the backend's own framebuffer) to the window's
+    /// current inner size.
     ///
     /// # Errors
     ///
@@ -83,6 +99,7 @@ impl WinitBackend {
         let mut surface = Surface::new(&context, window.clone())?;
 
         let size = window.inner_size();
+        let pixel_size = (size.width as usize, size.height as usize);
         if let (Some(width), Some(height)) =
             (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
         {
@@ -93,18 +110,21 @@ impl WinitBackend {
             window,
             surface,
             glyph_cache,
+            pixels: vec![0xFF000000; pixel_size.0 * pixel_size.1],
+            pixel_size,
             cursor_position: Position::ORIGIN,
             cursor_visible: true,
         })
     }
 
-    /// Resizes the underlying pixel surface to match the window's current
-    /// inner size.
+    /// Resizes the underlying pixel surface (and the backend's own
+    /// framebuffer) to match the window's current inner size.
     ///
-    /// Call this from a `WindowEvent::Resized` handler. It only resizes the
-    /// pixel surface itself; ratatui's `Terminal` picks up the resulting
-    /// change in [`Backend::size`] automatically on the next `draw` call, so
-    /// there's no need to call `Terminal::resize` separately.
+    /// Call this from a `WindowEvent::Resized` handler. Resizing discards
+    /// the framebuffer's prior contents (filling with black), which is
+    /// fine: ratatui's `Terminal` detects the resulting change in
+    /// [`Backend::size`] on the next `draw` call and sends a full repaint,
+    /// so there's no need to call `Terminal::resize` separately.
     ///
     /// # Errors
     ///
@@ -116,17 +136,30 @@ impl WinitBackend {
         {
             self.surface.resize(width, height)?;
         }
+        self.pixel_size = (size.width as usize, size.height as usize);
+        self.pixels = vec![0xFF000000; self.pixel_size.0 * self.pixel_size.1];
         Ok(())
     }
 
     fn cols_rows(&self) -> (u16, u16) {
-        let size = self.window.inner_size();
-        let cols = size.width as usize / self.glyph_cache.cell_width;
-        let rows = size.height as usize / self.glyph_cache.cell_height;
+        let (width, height) = self.pixel_size;
+        let cols = width / self.glyph_cache.cell_width;
+        let rows = height / self.glyph_cache.cell_height;
         (
             cols.min(u16::MAX as usize) as u16,
             rows.min(u16::MAX as usize) as u16,
         )
+    }
+
+    /// Copies the backend's own framebuffer, in full, into whichever
+    /// physical buffer `softbuffer` currently hands back, then presents it.
+    /// See the [`WinitBackend`] docs for why a full copy every time (rather
+    /// than presenting whatever was last partially written) is necessary.
+    fn present(&mut self) -> Result<(), BackendError> {
+        let mut buffer = self.surface.buffer_mut()?;
+        buffer.copy_from_slice(&self.pixels);
+        buffer.present()?;
+        Ok(())
     }
 }
 
@@ -203,30 +236,22 @@ impl Backend for WinitBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        let size = self.window.inner_size();
-        let (width, height) = (size.width as usize, size.height as usize);
-        let mut buffer = self.surface.buffer_mut()?;
-        let mut pixels = PixelBuf::new(&mut buffer, width, height);
+        let (width, height) = self.pixel_size;
+        let mut pixels = PixelBuf::new(&mut self.pixels, width, height);
 
         for (x, y, cell) in content {
             let fg = color_to_rgb(cell.fg, (255, 255, 255));
             let bg = color_to_rgb(cell.bg, (0, 0, 0));
             let ch = cell.symbol().chars().next().unwrap_or(' ');
-            self.glyph_cache.draw_cell(
-                &mut pixels,
-                x as usize,
-                y as usize,
-                ch,
-                fg,
-                bg,
-            );
+            self.glyph_cache
+                .draw_cell(&mut pixels, x as usize, y as usize, ch, fg, bg);
         }
 
         // softbuffer only shows a buffer on screen once presented; there's
         // no separate "swap" step, so this has to happen here rather than
         // in `flush` (whose default no-op assumption was wrong - this was
         // caught by the window staying black until this was added).
-        buffer.present()?;
+        self.present()?;
 
         Ok(())
     }
@@ -251,10 +276,8 @@ impl Backend for WinitBackend {
     }
 
     fn clear(&mut self) -> Result<(), Self::Error> {
-        let mut buffer = self.surface.buffer_mut()?;
-        buffer.fill(0xFF000000);
-        buffer.present()?;
-        Ok(())
+        self.pixels.fill(0xFF000000);
+        self.present()
     }
 
     fn clear_region(&mut self, clear_type: ClearType) -> Result<(), Self::Error> {
@@ -275,10 +298,10 @@ impl Backend for WinitBackend {
 
     fn window_size(&mut self) -> Result<WindowSize, Self::Error> {
         let (cols, rows) = self.cols_rows();
-        let size = self.window.inner_size();
+        let (width, height) = self.pixel_size;
         Ok(WindowSize {
             columns_rows: Size::new(cols, rows),
-            pixels: Size::new(size.width as u16, size.height as u16),
+            pixels: Size::new(width as u16, height as u16),
         })
     }
 
