@@ -1,8 +1,24 @@
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 
-const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
+/// Primary font: defines the monospace cell grid and covers printable
+/// ASCII, box drawing, block elements, and geometric shapes/arrows — every
+/// glyph ratatui's borders, gauges, sparklines, and scrollbars use.
+const PRIMARY_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
 
-/// Drawn in place of any character outside the cached printable-ASCII range.
+/// Fallback font, consulted only for ranges the primary font doesn't cover.
+/// Same Bitstream Vera license/family as the primary font, so no new
+/// license to track. Not monospace, but only used for glyphs (Braille dot
+/// patterns) that are inherently small relative to a terminal cell.
+const FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSans.ttf");
+
+const PRIMARY_RANGE: RangeInclusive<u32> = 0x20..=0x7E;
+
+/// Ranges rasterized from `FALLBACK_FONT_BYTES`. Currently just Braille
+/// Patterns, used by ratatui's `Canvas` widget's Braille marker.
+const FALLBACK_RANGES: &[RangeInclusive<u32>] = &[0x2800..=0x28FF];
+
+/// Drawn in place of any character outside the cached ranges above.
 const FALLBACK_CHAR: char = '?';
 
 struct Glyph {
@@ -10,8 +26,9 @@ struct Glyph {
     coverage: Vec<u8>,
 }
 
-/// Printable-ASCII glyphs rasterized once at a fixed pixel size, plus the
-/// monospace cell geometry derived from the font's own metrics.
+/// Printable-ASCII and Braille glyphs rasterized once at a fixed pixel
+/// size, plus the monospace cell geometry derived from the primary font's
+/// own metrics.
 pub struct GlyphCache {
     glyphs: HashMap<char, Glyph>,
     baseline: i32,
@@ -21,21 +38,35 @@ pub struct GlyphCache {
 
 impl GlyphCache {
     pub fn new(px: f32) -> Self {
-        let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
-            .expect("embedded font failed to parse");
+        let primary =
+            fontdue::Font::from_bytes(PRIMARY_FONT_BYTES, fontdue::FontSettings::default())
+                .expect("embedded primary font failed to parse");
+        let fallback =
+            fontdue::Font::from_bytes(FALLBACK_FONT_BYTES, fontdue::FontSettings::default())
+                .expect("embedded fallback font failed to parse");
 
         let mut glyphs = HashMap::new();
-        for byte in 0x20u8..=0x7E {
-            let ch = byte as char;
-            let (metrics, coverage) = font.rasterize(ch, px);
+        for cp in PRIMARY_RANGE {
+            let ch = char::from_u32(cp).expect("primary range is valid UTF-32");
+            let (metrics, coverage) = primary.rasterize(ch, px);
             glyphs.insert(ch, Glyph { metrics, coverage });
+        }
+        for range in FALLBACK_RANGES {
+            for cp in range.clone() {
+                let ch = char::from_u32(cp).expect("fallback ranges are valid UTF-32");
+                if fallback.lookup_glyph_index(ch) == 0 {
+                    continue;
+                }
+                let (metrics, coverage) = fallback.rasterize(ch, px);
+                glyphs.insert(ch, Glyph { metrics, coverage });
+            }
         }
 
         let cell_width = glyphs[&FALLBACK_CHAR].metrics.advance_width.round() as usize;
 
-        let line_metrics = font
+        let line_metrics = primary
             .horizontal_line_metrics(px)
-            .expect("embedded font is missing horizontal line metrics");
+            .expect("embedded primary font is missing horizontal line metrics");
         let cell_height = line_metrics.new_line_size.round() as usize;
         let baseline = line_metrics.ascent.round() as i32;
 

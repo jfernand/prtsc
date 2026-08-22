@@ -14,10 +14,11 @@ use crate::glyph::GlyphCache;
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const FONT_PX: f32 = 20.0;
 
-const TEST_ROWS: [&str; 3] = [
+const TEST_ROWS: [&str; 4] = [
     "Hello, screencap! ~!@#$%^&*()_+",
     "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ",
     "unicode fallback: 日本語 emoji: 🎉",
+    "braille: ⠁⠃⠉⠙⠑⠋⠛⠓⠊⠚ ⣿⡿⢿⣟⣯⣷",
 ];
 
 struct App {

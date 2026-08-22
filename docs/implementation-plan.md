@@ -54,6 +54,20 @@ cache.
 **Verify:** a small hardcoded grid of text renders correctly, including
 non-ASCII fallback behavior (draw blank/`?` for glyphs not in the cache).
 
+**Font coverage note:** DejaVu Sans Mono alone covers every glyph ratatui
+uses for borders/gauges/sparklines/scrollbars (box drawing, block elements,
+geometric shapes) but has zero Braille Patterns (U+2800–U+28FF) coverage,
+needed by ratatui's `Canvas` widget. Checked candidate fonts directly with a
+`fontdue`-based coverage scan (see commit history/PR discussion, not kept as
+a script in this repo) — DejaVu Sans (the proportional sibling, same
+Bitstream Vera license) has full Braille coverage, so `GlyphCache` rasterizes
+the printable-ASCII range from DejaVu Sans Mono (also defining the cell
+grid) and the Braille range from DejaVu Sans as a fallback, keeping
+everything under one already-vetted permissive license. GNU FreeMono also
+has full coverage but is GPL-3 with a document-embedding exception that
+doesn't clearly cover bundling into a compiled binary — deliberately not
+used for that reason.
+
 ### 4. `Backend` implementation
 Implement `ratatui::backend::Backend` for a `WinitBackend` type wrapping the
 window, softbuffer surface, and glyph cache. Required methods: `draw`,
