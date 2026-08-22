@@ -1,6 +1,6 @@
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use softbuffer::{Context, Surface};
 use winit::application::ApplicationHandler;
@@ -11,33 +11,55 @@ use winit::window::{Window, WindowId};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 
-/// Small, dependency-free PRNG (splitmix64) — good enough for a visual
-/// smoke test, not for anything security- or simulation-sensitive.
-fn next_color(seed: &mut u64) -> (u8, u8, u8) {
-    *seed = seed.wrapping_add(0x9E3779B97F4A7C15);
-    let mut z = *seed;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-    z ^= z >> 31;
-    (z as u8, (z >> 8) as u8, (z >> 16) as u8)
+const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
+const GLYPH_PX: f32 = 32.0;
+const TEST_CHAR: char = 'A';
+
+struct Glyph {
+    metrics: fontdue::Metrics,
+    coverage: Vec<u8>,
+}
+
+fn rasterize_test_glyph() -> Glyph {
+    let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
+        .expect("embedded font failed to parse");
+    let (metrics, coverage) = font.rasterize(TEST_CHAR, GLYPH_PX);
+    Glyph { metrics, coverage }
+}
+
+/// Blits a single-channel coverage glyph as opaque white onto an opaque
+/// black `buf`, clipping at the buffer edges.
+fn blit_glyph(buf: &mut [u32], buf_width: usize, buf_height: usize, glyph: &Glyph, x0: i32, y0: i32) {
+    for row in 0..glyph.metrics.height {
+        for col in 0..glyph.metrics.width {
+            let coverage = glyph.coverage[row * glyph.metrics.width + col] as u32;
+            if coverage == 0 {
+                continue;
+            }
+            let x = x0 + col as i32;
+            let y = y0 + row as i32;
+            if x < 0 || y < 0 || x as usize >= buf_width || y as usize >= buf_height {
+                continue;
+            }
+            let shade = (255 * coverage) / 255;
+            buf[y as usize * buf_width + x as usize] =
+                (0xFFu32 << 24) | (shade << 16) | (shade << 8) | shade;
+        }
+    }
 }
 
 struct App {
     window: Option<Rc<Window>>,
     surface: Option<Surface<Rc<Window>, Rc<Window>>>,
-    seed: u64,
+    glyph: Glyph,
 }
 
 impl Default for App {
     fn default() -> Self {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x1234_5678_9abc_def0);
         App {
             window: None,
             surface: None,
-            seed,
+            glyph: rasterize_test_glyph(),
         }
     }
 }
@@ -114,13 +136,12 @@ impl App {
             return;
         }
 
-        let (r, g, b) = next_color(&mut self.seed);
-        let pixel = (0xFFu32 << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
-
+        let (width, height) = (size.width as usize, size.height as usize);
         let mut buffer = surface
             .buffer_mut()
             .expect("failed to get softbuffer buffer");
-        buffer.fill(pixel);
+        buffer.fill(0xFF000000);
+        blit_glyph(&mut buffer, width, height, &self.glyph, 20, 20);
         buffer
             .present()
             .expect("failed to present softbuffer buffer");
