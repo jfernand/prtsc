@@ -9,44 +9,9 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use crate::glyph::{self, Glyph};
+
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
-
-const FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
-const GLYPH_PX: f32 = 32.0;
-const TEST_CHAR: char = 'A';
-
-struct Glyph {
-    metrics: fontdue::Metrics,
-    coverage: Vec<u8>,
-}
-
-fn rasterize_test_glyph() -> Glyph {
-    let font = fontdue::Font::from_bytes(FONT_BYTES, fontdue::FontSettings::default())
-        .expect("embedded font failed to parse");
-    let (metrics, coverage) = font.rasterize(TEST_CHAR, GLYPH_PX);
-    Glyph { metrics, coverage }
-}
-
-/// Blits a single-channel coverage glyph as opaque white onto an opaque
-/// black `buf`, clipping at the buffer edges.
-fn blit_glyph(buf: &mut [u32], buf_width: usize, buf_height: usize, glyph: &Glyph, x0: i32, y0: i32) {
-    for row in 0..glyph.metrics.height {
-        for col in 0..glyph.metrics.width {
-            let coverage = glyph.coverage[row * glyph.metrics.width + col] as u32;
-            if coverage == 0 {
-                continue;
-            }
-            let x = x0 + col as i32;
-            let y = y0 + row as i32;
-            if x < 0 || y < 0 || x as usize >= buf_width || y as usize >= buf_height {
-                continue;
-            }
-            let shade = (255 * coverage) / 255;
-            buf[y as usize * buf_width + x as usize] =
-                (0xFFu32 << 24) | (shade << 16) | (shade << 8) | shade;
-        }
-    }
-}
 
 struct App {
     window: Option<Rc<Window>>,
@@ -59,7 +24,7 @@ impl Default for App {
         App {
             window: None,
             surface: None,
-            glyph: rasterize_test_glyph(),
+            glyph: glyph::rasterize_test_glyph(),
         }
     }
 }
@@ -141,14 +106,14 @@ impl App {
             .buffer_mut()
             .expect("failed to get softbuffer buffer");
         buffer.fill(0xFF000000);
-        blit_glyph(&mut buffer, width, height, &self.glyph, 20, 20);
+        glyph::blit_glyph(&mut buffer, width, height, &self.glyph, 20, 20);
         buffer
             .present()
             .expect("failed to present softbuffer buffer");
     }
 }
 
-fn main() {
+pub fn run() {
     let event_loop = EventLoop::new().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App::default();
