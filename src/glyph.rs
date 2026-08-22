@@ -1,3 +1,10 @@
+//! Glyph rasterization and the monospace cell grid used to draw text into a
+//! raw pixel buffer.
+//!
+//! [`crate::glyph::GlyphCache`] rasterizes a fixed, known set of characters once up
+//! front — printable ASCII plus Braille Patterns — rather than rasterizing
+//! on demand, so drawing a frame never touches the font rasterizer.
+
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
 
@@ -29,14 +36,47 @@ struct Glyph {
 /// Printable-ASCII and Braille glyphs rasterized once at a fixed pixel
 /// size, plus the monospace cell geometry derived from the primary font's
 /// own metrics.
+///
+/// # Examples
+///
+/// ```
+/// use screencap::glyph::GlyphCache;
+///
+/// let cache = GlyphCache::new(20.0);
+/// assert!(cache.cell_width > 0);
+/// assert!(cache.cell_height > 0);
+/// ```
 pub struct GlyphCache {
     glyphs: HashMap<char, Glyph>,
     baseline: i32,
+    /// Fixed pixel width of one monospace cell, derived from the primary
+    /// font's advance width at the pixel size passed to [`GlyphCache::new`].
     pub cell_width: usize,
+    /// Fixed pixel height of one monospace cell (line height), derived
+    /// from the primary font's line metrics.
     pub cell_height: usize,
 }
 
 impl GlyphCache {
+    /// Rasterizes the cache's glyph set at `px` pixels per em.
+    ///
+    /// This parses both embedded fonts and rasterizes every cached
+    /// character up front, so it's meant to be called once at startup
+    /// (or once per font-size change), not per frame.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the embedded font data fails to parse, or if the primary
+    /// font is missing horizontal line metrics — both would indicate a
+    /// corrupt embedded font file rather than a caller error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use screencap::glyph::GlyphCache;
+    ///
+    /// let cache = GlyphCache::new(20.0);
+    /// ```
     pub fn new(px: f32) -> Self {
         let primary =
             fontdue::Font::from_bytes(PRIMARY_FONT_BYTES, fontdue::FontSettings::default())
@@ -84,9 +124,25 @@ impl GlyphCache {
             .unwrap_or_else(|| &self.glyphs[&FALLBACK_CHAR])
     }
 
-    /// Draws each element of `rows` as one line of monospace cells, top-left
-    /// corner at `(origin_x, origin_y)`. Characters not in the cache (e.g.
-    /// non-ASCII) are drawn as `FALLBACK_CHAR`.
+    /// Draws each element of `rows` as one line of monospace cells into
+    /// `buf`, an opaque-black, row-major `0xAARRGGBB` pixel buffer of size
+    /// `buf_width * buf_height`, top-left corner at `(origin_x, origin_y)`.
+    ///
+    /// Characters outside the cached ranges (e.g. non-ASCII characters
+    /// other than Braille Patterns) are drawn as `?`. `buf` is expected to
+    /// already be cleared to a background color; glyphs are blitted as
+    /// opaque white and don't erase their cell first.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use screencap::glyph::GlyphCache;
+    ///
+    /// let cache = GlyphCache::new(20.0);
+    /// let (width, height) = (200, 100);
+    /// let mut buf = vec![0xFF000000u32; width * height];
+    /// cache.draw_grid(&mut buf, width, height, &["hello, world"], 0, 0);
+    /// ```
     pub fn draw_grid(
         &self,
         buf: &mut [u32],

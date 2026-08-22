@@ -2,6 +2,8 @@
 name = "screencap"
 version = "0.1.0"
 edition = "2024"
+description = "Standalone window picker and screen capture tool with a ratatui UI rendered directly to its own window"
+license = "MIT OR Apache-2.0"
 
 [dependencies]
 fontdue = "0.9.4"

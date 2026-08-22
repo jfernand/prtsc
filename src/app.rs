@@ -1,3 +1,7 @@
+//! The application window: a `winit` [`winit::application::ApplicationHandler`]
+//! that owns a `softbuffer` pixel surface and repaints it via
+//! [`crate::glyph::GlyphCache`] on a fixed frame interval.
+
 use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -122,6 +126,24 @@ impl App {
     }
 }
 
+/// Opens the application window and runs its event loop.
+///
+/// This blocks the calling thread until the window is closed (via its
+/// close button or the Escape key) and never returns before then, so it
+/// should typically be the last thing called from `main`.
+///
+/// # Panics
+///
+/// Panics if the platform windowing backend can't be initialized, or if
+/// window/surface creation fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// // Opens a window and blocks until it's closed, so this is `no_run`
+/// // rather than an executed doctest.
+/// screencap::run();
+/// ```
 pub fn run() {
     let event_loop = EventLoop::new().expect("failed to create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
