@@ -22,7 +22,10 @@ const FALLBACK_FONT_BYTES: &[u8] = include_bytes!("../assets/fonts/DejaVuSans.tt
 const PRIMARY_RANGE: RangeInclusive<u32> = 0x20..=0x7E;
 
 /// Ranges rasterized from `FALLBACK_FONT_BYTES`. Currently just Braille
-/// Patterns, used by ratatui's `Canvas` widget's Braille marker.
+/// Patterns, used by ratatui's `Canvas` widget's Braille marker. Deliberately
+/// a slice of ranges (not a single range) since more may be added later;
+/// clippy's suggestion to collect it into a `Vec<u32>` doesn't fit that.
+#[allow(clippy::single_range_in_vec_init)]
 const FALLBACK_RANGES: &[RangeInclusive<u32>] = &[0x2800..=0x28FF];
 
 /// Drawn in place of any character outside the cached ranges above.
