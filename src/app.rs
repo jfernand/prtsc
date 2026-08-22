@@ -1,44 +1,28 @@
 //! The application window: a `winit` [`winit::application::ApplicationHandler`]
-//! that owns a `softbuffer` pixel surface and repaints it via
-//! [`crate::glyph::GlyphCache`] on a fixed frame interval.
+//! that owns a `ratatui` [`ratatui::Terminal`] backed by
+//! [`crate::backend::WinitBackend`] and redraws it on a fixed frame interval.
 
-use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use softbuffer::{Context, Surface};
+use ratatui::Terminal;
+use ratatui::widgets::Paragraph;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
+use crate::backend::WinitBackend;
 use crate::glyph::GlyphCache;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const FONT_PX: f32 = 20.0;
 
-const TEST_ROWS: [&str; 4] = [
-    "Hello, prtsc! ~!@#$%^&*()_+",
-    "0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ",
-    "unicode fallback: 日本語 emoji: 🎉",
-    "braille: ⠁⠃⠉⠙⠑⠋⠛⠓⠊⠚ ⣿⡿⢿⣟⣯⣷",
-];
-
+#[derive(Default)]
 struct App {
     window: Option<Rc<Window>>,
-    surface: Option<Surface<Rc<Window>, Rc<Window>>>,
-    glyph_cache: GlyphCache,
-}
-
-impl Default for App {
-    fn default() -> Self {
-        App {
-            window: None,
-            surface: None,
-            glyph_cache: GlyphCache::new(FONT_PX),
-        }
-    }
+    terminal: Option<Terminal<WinitBackend>>,
 }
 
 impl ApplicationHandler for App {
@@ -50,21 +34,12 @@ impl ApplicationHandler for App {
                 .expect("failed to create window"),
         );
 
-        let context = Context::new(window.clone()).expect("failed to create softbuffer context");
-        let mut surface =
-            Surface::new(&context, window.clone()).expect("failed to create softbuffer surface");
-
-        let size = window.inner_size();
-        if let (Some(width), Some(height)) =
-            (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-        {
-            surface
-                .resize(width, height)
-                .expect("failed to size softbuffer surface");
-        }
+        let backend = WinitBackend::new(window.clone(), GlyphCache::new(FONT_PX))
+            .expect("failed to create winit backend");
+        let terminal = Terminal::new(backend).expect("failed to create terminal");
 
         self.window = Some(window);
-        self.surface = Some(surface);
+        self.terminal = Some(terminal);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -79,14 +54,11 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => event_loop.exit(),
-            WindowEvent::Resized(size) => {
-                if let (Some(surface), Some(width), Some(height)) = (
-                    self.surface.as_mut(),
-                    NonZeroU32::new(size.width),
-                    NonZeroU32::new(size.height),
-                ) {
-                    surface
-                        .resize(width, height)
+            WindowEvent::Resized(_) => {
+                if let Some(terminal) = &mut self.terminal {
+                    terminal
+                        .backend_mut()
+                        .resize_surface()
                         .expect("failed to resize softbuffer surface");
                 }
             }
@@ -105,24 +77,14 @@ impl ApplicationHandler for App {
 
 impl App {
     fn redraw(&mut self) {
-        let (Some(window), Some(surface)) = (&self.window, self.surface.as_mut()) else {
+        let Some(terminal) = &mut self.terminal else {
             return;
         };
-        let size = window.inner_size();
-        if size.width == 0 || size.height == 0 {
-            return;
-        }
-
-        let (width, height) = (size.width as usize, size.height as usize);
-        let mut buffer = surface
-            .buffer_mut()
-            .expect("failed to get softbuffer buffer");
-        buffer.fill(0xFF000000);
-        self.glyph_cache
-            .draw_grid(&mut buffer, width, height, &TEST_ROWS, 10, 10);
-        buffer
-            .present()
-            .expect("failed to present softbuffer buffer");
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new("Hello, prtsc!"), frame.area());
+            })
+            .expect("failed to draw frame");
     }
 }
 
@@ -135,7 +97,7 @@ impl App {
 /// # Panics
 ///
 /// Panics if the platform windowing backend can't be initialized, or if
-/// window/surface creation fails.
+/// window/backend/terminal creation fails.
 ///
 /// # Examples
 ///

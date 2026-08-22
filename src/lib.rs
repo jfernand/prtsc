@@ -4,8 +4,9 @@
 //!
 //! This crate is currently application-shaped rather than a general-purpose
 //! library — [`run`] opens a window and drives its event loop until the
-//! window is closed. The [`glyph`] module (glyph rasterization and the
-//! monospace cell grid) is the reusable part and is documented as such.
+//! window is closed. The [`glyph`] and [`backend`] modules (glyph
+//! rasterization/the monospace cell grid, and the `ratatui` `Backend` built
+//! on top of it) are the reusable parts and are documented as such.
 //!
 //! # Examples
 //!
@@ -16,6 +17,8 @@
 
 /// The application window and its event loop.
 pub mod app;
+/// A `ratatui` `Backend` that renders into the window directly.
+pub mod backend;
 /// Glyph rasterization and the monospace cell grid.
 pub mod glyph;
 

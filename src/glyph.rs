@@ -36,6 +36,34 @@ struct Glyph {
     coverage: Vec<u8>,
 }
 
+/// A row-major `0xAARRGGBB` pixel buffer, borrowed from the caller, with
+/// bounds-checked writes. Bundles a raw `&mut [u32]` with its width/height
+/// so drawing functions don't need three separate parameters for it.
+pub struct PixelBuf<'a> {
+    pixels: &'a mut [u32],
+    width: usize,
+    height: usize,
+}
+
+impl<'a> PixelBuf<'a> {
+    /// Wraps `pixels` (expected to hold exactly `width * height` elements)
+    /// as a drawable buffer.
+    pub fn new(pixels: &'a mut [u32], width: usize, height: usize) -> Self {
+        PixelBuf {
+            pixels,
+            width,
+            height,
+        }
+    }
+
+    fn set(&mut self, x: i32, y: i32, color: (u8, u8, u8)) {
+        if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
+            return;
+        }
+        self.pixels[y as usize * self.width + x as usize] = pack(color);
+    }
+}
+
 /// Printable-ASCII and Braille glyphs rasterized once at a fixed pixel
 /// size, plus the monospace cell geometry derived from the primary font's
 /// own metrics.
@@ -127,57 +155,72 @@ impl GlyphCache {
             .unwrap_or_else(|| &self.glyphs[&FALLBACK_CHAR])
     }
 
-    /// Draws each element of `rows` as one line of monospace cells into
-    /// `buf`, an opaque-black, row-major `0xAARRGGBB` pixel buffer of size
-    /// `buf_width * buf_height`, top-left corner at `(origin_x, origin_y)`.
+    /// Draws one monospace cell at grid position `(col, row)`: fills its
+    /// pixel rectangle with `bg`, then blends `ch`'s rasterized glyph over
+    /// it in `fg`, using the glyph's coverage as an alpha value per pixel.
     ///
     /// Characters outside the cached ranges (e.g. non-ASCII characters
-    /// other than Braille Patterns) are drawn as `?`. `buf` is expected to
-    /// already be cleared to a background color; glyphs are blitted as
-    /// opaque white and don't erase their cell first.
+    /// other than Braille Patterns) are drawn as `?`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use prtsc::glyph::GlyphCache;
+    /// use prtsc::glyph::{GlyphCache, PixelBuf};
     ///
     /// let cache = GlyphCache::new(20.0);
     /// let (width, height) = (200, 100);
-    /// let mut buf = vec![0xFF000000u32; width * height];
-    /// cache.draw_grid(&mut buf, width, height, &["hello, world"], 0, 0);
+    /// let mut pixels = vec![0xFF000000u32; width * height];
+    /// let mut buf = PixelBuf::new(&mut pixels, width, height);
+    /// cache.draw_cell(&mut buf, 0, 0, 'A', (255, 255, 0), (0, 0, 128));
     /// ```
-    pub fn draw_grid(
+    pub fn draw_cell(
         &self,
-        buf: &mut [u32],
-        buf_width: usize,
-        buf_height: usize,
-        rows: &[&str],
-        origin_x: i32,
-        origin_y: i32,
+        buf: &mut PixelBuf<'_>,
+        col: usize,
+        row: usize,
+        ch: char,
+        fg: (u8, u8, u8),
+        bg: (u8, u8, u8),
     ) {
-        for (row, line) in rows.iter().enumerate() {
-            let cell_y = origin_y + (row * self.cell_height) as i32;
-            for (col, ch) in line.chars().enumerate() {
-                let glyph = self.glyph_for(ch);
-                let cell_x = origin_x + (col * self.cell_width) as i32;
-                let glyph_x = cell_x + glyph.metrics.xmin;
-                let glyph_y =
-                    cell_y + self.baseline - glyph.metrics.ymin - glyph.metrics.height as i32;
-                blit_glyph(buf, buf_width, buf_height, glyph, glyph_x, glyph_y);
-            }
+        let x0 = (col * self.cell_width) as i32;
+        let y0 = (row * self.cell_height) as i32;
+        fill_rect(buf, x0, y0, self.cell_width, self.cell_height, bg);
+
+        let glyph = self.glyph_for(ch);
+        let glyph_x = x0 + glyph.metrics.xmin;
+        let glyph_y = y0 + self.baseline - glyph.metrics.ymin - glyph.metrics.height as i32;
+        blit_glyph(buf, glyph, glyph_x, glyph_y, fg, bg);
+    }
+}
+
+/// Fills a `width` x `height` rectangle at `(x0, y0)` with opaque `color`,
+/// clipping at the buffer edges.
+fn fill_rect(
+    buf: &mut PixelBuf<'_>,
+    x0: i32,
+    y0: i32,
+    width: usize,
+    height: usize,
+    color: (u8, u8, u8),
+) {
+    for row in 0..height {
+        for col in 0..width {
+            buf.set(x0 + col as i32, y0 + row as i32, color);
         }
     }
 }
 
-/// Blits a single-channel coverage glyph as opaque white onto an opaque
-/// black `buf`, clipping at the buffer edges.
+/// Blits a single-channel coverage glyph, blending `fg` over `bg` by the
+/// glyph's per-pixel coverage (its own alpha), clipping at the buffer
+/// edges. Pixels with zero coverage are left untouched, since the caller is
+/// expected to have already filled the cell's background.
 fn blit_glyph(
-    buf: &mut [u32],
-    buf_width: usize,
-    buf_height: usize,
+    buf: &mut PixelBuf<'_>,
     glyph: &Glyph,
     x0: i32,
     y0: i32,
+    fg: (u8, u8, u8),
+    bg: (u8, u8, u8),
 ) {
     for row in 0..glyph.metrics.height {
         for col in 0..glyph.metrics.width {
@@ -185,13 +228,21 @@ fn blit_glyph(
             if coverage == 0 {
                 continue;
             }
-            let x = x0 + col as i32;
-            let y = y0 + row as i32;
-            if x < 0 || y < 0 || x as usize >= buf_width || y as usize >= buf_height {
-                continue;
-            }
-            buf[y as usize * buf_width + x as usize] =
-                (0xFFu32 << 24) | (coverage << 16) | (coverage << 8) | coverage;
+            buf.set(x0 + col as i32, y0 + row as i32, lerp(bg, fg, coverage));
         }
     }
+}
+
+/// Linearly interpolates from `bg` to `fg` by `coverage / 255`.
+fn lerp(bg: (u8, u8, u8), fg: (u8, u8, u8), coverage: u32) -> (u8, u8, u8) {
+    let mix = |b: u8, f: u8| -> u8 {
+        let (b, f) = (b as i32, f as i32);
+        (b + (f - b) * coverage as i32 / 255) as u8
+    };
+    (mix(bg.0, fg.0), mix(bg.1, fg.1), mix(bg.2, fg.2))
+}
+
+/// Packs an opaque RGB color into the buffer's `0xAARRGGBB` pixel format.
+fn pack((r, g, b): (u8, u8, u8)) -> u32 {
+    (0xFFu32 << 24) | ((r as u32) << 16) | ((g as u32) << 8) | b as u32
 }
