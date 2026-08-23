@@ -118,25 +118,30 @@ impl WinitBackend {
     }
 
     /// Resizes the underlying pixel surface (and the backend's own
-    /// framebuffer) to match the window's current inner size.
+    /// framebuffer) to `width` x `height`.
     ///
-    /// Call this from a `WindowEvent::Resized` handler. Resizing discards
-    /// the framebuffer's prior contents (filling with black), which is
-    /// fine: ratatui's `Terminal` detects the resulting change in
-    /// [`Backend::size`] on the next `draw` call and sends a full repaint,
-    /// so there's no need to call `Terminal::resize` separately.
+    /// Call this from a `WindowEvent::Resized` handler, passing that
+    /// event's own size payload — not a fresh `window.inner_size()` query.
+    /// During a fast live-drag resize, `WindowEvent::Resized` fires
+    /// repeatedly in quick succession, and a live query doesn't reliably
+    /// correspond to the *specific* event being handled at that moment;
+    /// using the event's own payload is the only way to guarantee the
+    /// surface/framebuffer get sized to what that particular notification
+    /// actually reported, rather than whatever the window happened to
+    /// report a moment later. Resizing discards the framebuffer's prior
+    /// contents (filling with black), which is fine: ratatui's `Terminal`
+    /// detects the resulting change in [`Backend::size`] on the next `draw`
+    /// call and sends a full repaint, so there's no need to call
+    /// `Terminal::resize` separately.
     ///
     /// # Errors
     ///
     /// Returns an error if the surface can't be resized.
-    pub fn resize_surface(&mut self) -> Result<(), BackendError> {
-        let size = self.window.inner_size();
-        if let (Some(width), Some(height)) =
-            (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-        {
-            self.surface.resize(width, height)?;
+    pub fn resize_surface(&mut self, width: u32, height: u32) -> Result<(), BackendError> {
+        if let (Some(w), Some(h)) = (NonZeroU32::new(width), NonZeroU32::new(height)) {
+            self.surface.resize(w, h)?;
         }
-        self.pixel_size = (size.width as usize, size.height as usize);
+        self.pixel_size = (width as usize, height as usize);
         self.pixels = vec![0xFF000000; self.pixel_size.0 * self.pixel_size.1];
         Ok(())
     }

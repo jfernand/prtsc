@@ -94,11 +94,11 @@ impl ApplicationHandler for App {
                     self.handle_input(input, event_loop);
                 }
             }
-            WindowEvent::Resized(_) => {
+            WindowEvent::Resized(new_size) => {
                 if let Some(terminal) = &mut self.terminal {
                     terminal
                         .backend_mut()
-                        .resize_surface()
+                        .resize_surface(new_size.width, new_size.height)
                         .expect("failed to resize softbuffer surface");
                 }
             }
