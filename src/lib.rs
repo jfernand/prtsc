@@ -21,6 +21,9 @@ pub mod app;
 pub mod backend;
 /// Glyph rasterization and the monospace cell grid.
 pub mod glyph;
+// Key-event-to-app-action mapping; internal to `app`, not part of the
+// reusable public API.
+mod input;
 
 /// Opens the application window and runs its event loop until closed.
 ///
