@@ -1,18 +1,20 @@
 //! A screen-capture CLI tool built on the XDG Desktop Portal's screenshot
-//! picker: `prtsc` captures once and prints the saved location.
+//! picker: `prtsc` with no arguments captures once and prints the saved
+//! location, and `prtsc mcp` exposes the same capture action as an MCP tool
+//! over stdio.
 #![warn(missing_docs)]
 
 mod capture;
+mod mcp;
 
-/// Captures once via the XDG Desktop Portal's screenshot picker, printing
-/// the saved location to stdout on success or an error to stderr on
-/// failure/cancellation (with a non-zero exit code).
+/// Runs `prtsc` according to the first CLI argument: a one-shot capture with
+/// no arguments, or the MCP server for `mcp`.
 ///
 /// # Examples
 ///
 /// ```no_run
-/// // Blocks on a real portal request, so this is `no_run` rather than an
-/// // executed doctest.
+/// // Reads real CLI args and may block on a capture or an MCP session, so
+/// // this is `no_run` rather than an executed doctest.
 /// prtsc::run();
 /// ```
 pub fn run() {
@@ -20,7 +22,23 @@ pub fn run() {
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");
-    runtime.block_on(capture_once());
+    runtime.block_on(run_async());
+}
+
+async fn run_async() {
+    match std::env::args().nth(1).as_deref() {
+        None => capture_once().await,
+        Some("mcp") => {
+            if let Err(err) = mcp::run().await {
+                eprintln!("mcp server error: {err}");
+                std::process::exit(1);
+            }
+        }
+        Some(other) => {
+            eprintln!("unknown argument: {other} (expected no arguments, or `mcp`)");
+            std::process::exit(2);
+        }
+    }
 }
 
 async fn capture_once() {
