@@ -1,7 +1,8 @@
-//! A screen-capture CLI tool built on the XDG Desktop Portal's screenshot
-//! picker: `prtsc` with no arguments captures once and prints the saved
-//! location, and `prtsc mcp` exposes the same capture action as an MCP tool
-//! over stdio.
+//! A screen capture/recording CLI tool built on the XDG Desktop Portal:
+//! `prtsc` with no arguments captures a screenshot once and prints the
+//! saved location, `prtsc record [path]` records a screencast until
+//! Ctrl-C, and `prtsc mcp` exposes the capture action as an MCP tool over
+//! stdio.
 #![warn(missing_docs)]
 
 mod capture;
@@ -9,8 +10,9 @@ mod mcp;
 mod recording;
 mod screencast;
 
-/// Runs `prtsc` according to the first CLI argument: a one-shot capture with
-/// no arguments, or the MCP server for `mcp`.
+/// Runs `prtsc` according to the first CLI argument: a one-shot capture
+/// with no arguments, `record [path]` to record a screencast until
+/// Ctrl-C, or the MCP server for `mcp`.
 ///
 /// # Examples
 ///
@@ -28,7 +30,8 @@ pub fn run() {
 }
 
 async fn run_async() {
-    match std::env::args().nth(1).as_deref() {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
         None => capture_once().await,
         Some("mcp") => {
             if let Err(err) = mcp::run().await {
@@ -36,8 +39,9 @@ async fn run_async() {
                 std::process::exit(1);
             }
         }
+        Some("record") => record(args.next()).await,
         Some(other) => {
-            eprintln!("unknown argument: {other} (expected no arguments, or `mcp`)");
+            eprintln!("unknown argument: {other} (expected no arguments, `mcp`, or `record`)");
             std::process::exit(2);
         }
     }
@@ -48,6 +52,41 @@ async fn capture_once() {
         Ok(uri) => println!("{uri}"),
         Err(err) => {
             eprintln!("capture failed: {err}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn record(output: Option<String>) {
+    let output = output.unwrap_or_else(|| "recording.mp4".to_string());
+
+    let session = match screencast::negotiate().await {
+        Ok(session) => session,
+        Err(err) => {
+            eprintln!("recording setup failed: {err}");
+            std::process::exit(1);
+        }
+    };
+
+    let path = std::path::PathBuf::from(output);
+    let result = {
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            // `session` (specifically its ashpd `Session`) must stay alive
+            // for the whole recording - dropping it ends the portal-side
+            // cast - so it's moved into this closure whole rather than
+            // just its fields.
+            let session = session;
+            recording::record(session.fd, session.node_id, session.size, &path)
+        })
+        .await
+        .expect("recording thread panicked")
+    };
+
+    match result {
+        Ok(()) => println!("{}", path.display()),
+        Err(err) => {
+            eprintln!("recording failed: {err}");
             std::process::exit(1);
         }
     }

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Screen capture CLI (and MCP server) driven by the XDG Desktop Portal's screenshot picker"
+description = "Screen capture/recording CLI (and MCP server) driven by the XDG Desktop Portal"
 
 [[bin]]
 name = "prtsc"
