@@ -6,6 +6,7 @@
 
 mod capture;
 mod mcp;
+mod recording;
 mod screencast;
 
 /// Runs `prtsc` according to the first CLI argument: a one-shot capture with
