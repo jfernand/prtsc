@@ -61,7 +61,6 @@ impl From<softbuffer::SoftBufferError> for BackendError {
 /// handed back avoids the problem regardless of how many buffers the
 /// platform rotates through.
 pub struct WinitBackend {
-    window: Rc<Window>,
     surface: Surface<Rc<Window>, Rc<Window>>,
     glyph_cache: GlyphCache,
     pixels: Vec<u32>,
@@ -107,7 +106,6 @@ impl WinitBackend {
         }
 
         Ok(WinitBackend {
-            window,
             surface,
             glyph_cache,
             pixels: vec![0xFF000000; pixel_size.0 * pixel_size.1],
