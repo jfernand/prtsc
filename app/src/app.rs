@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::widgets::{Block, Paragraph, Sparkline};
+use ratatui::widgets::{Block, List, ListState, Sparkline};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -52,6 +52,10 @@ struct App {
     /// is a toggle rather than always on.
     fps_cap: Option<Duration>,
     last_redraw: Instant,
+    windows: Vec<xcap::Window>,
+    /// Index into `windows`. `0` even when `windows` is empty (there's
+    /// nothing to select then, so it's simply not rendered).
+    selected: usize,
 }
 
 impl Default for App {
@@ -67,6 +71,8 @@ impl Default for App {
             fps_history: VecDeque::with_capacity(FPS_HISTORY_LEN),
             fps_cap: Some(FRAME_INTERVAL),
             last_redraw: now,
+            windows: Vec::new(),
+            selected: 0,
         }
     }
 }
@@ -86,6 +92,7 @@ impl ApplicationHandler for App {
 
         self.window = Some(window);
         self.terminal = Some(terminal);
+        self.refresh_windows();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -162,11 +169,35 @@ impl App {
                     None => Some(FRAME_INTERVAL),
                 };
             }
-            // Wired up once the window-picker list exists (implementation
-            // plan step 7); mapped now so the translation layer is in place
-            // ahead of that.
-            Input::Up | Input::Down | Input::Enter => {}
+            Input::Up => {
+                if !self.windows.is_empty() {
+                    self.selected = (self.selected + self.windows.len() - 1) % self.windows.len();
+                }
+            }
+            Input::Down => {
+                if !self.windows.is_empty() {
+                    self.selected = (self.selected + 1) % self.windows.len();
+                }
+            }
+            // Wired up once step 8 adds the capture action.
+            Input::Enter => {}
         }
+    }
+
+    /// Repopulates `windows` from `xcap::Window::all()`, clamping
+    /// `selected` to stay in bounds. Logs to stderr and leaves the list
+    /// empty rather than panicking if enumeration fails (e.g. missing
+    /// screen-capture permission) - this is a system boundary, not a
+    /// programming error.
+    fn refresh_windows(&mut self) {
+        self.windows = match xcap::Window::all() {
+            Ok(windows) => windows,
+            Err(err) => {
+                eprintln!("failed to list windows: {err}");
+                Vec::new()
+            }
+        };
+        self.selected = self.selected.min(self.windows.len().saturating_sub(1));
     }
 
     /// Takes one FPS sample if [`FPS_SAMPLE_INTERVAL`] has elapsed since
@@ -205,11 +236,14 @@ impl App {
         } else {
             "uncapped"
         };
+        let items: Vec<String> = self.windows.iter().map(window_label).collect();
+        let mut list_state =
+            ListState::default().with_selected((!items.is_empty()).then_some(self.selected));
 
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let hello_area = if show_fps {
+                let list_area = if show_fps {
                     let [fps_area, rest] = Layout::vertical([
                         Constraint::Length(FPS_PANEL_HEIGHT),
                         Constraint::Min(0),
@@ -226,9 +260,23 @@ impl App {
                 } else {
                     area
                 };
-                frame.render_widget(Paragraph::new("Hello, prtsc!"), hello_area);
+                let list = List::new(items)
+                    .block(Block::bordered().title("Windows (Up/Down or j/k, Enter to capture)"))
+                    .highlight_symbol("> ");
+                frame.render_stateful_widget(list, list_area, &mut list_state);
             })
             .expect("failed to draw frame");
+    }
+}
+
+/// The label shown in the window-picker list for `window`. Falls back to a
+/// placeholder rather than erroring, since a window's title is genuinely
+/// unavailable sometimes (permissions, or the window closing between
+/// listing and querying it) and that's not worth losing the whole list over.
+fn window_label(window: &xcap::Window) -> String {
+    match window.title() {
+        Ok(title) if !title.is_empty() => title,
+        _ => "(untitled)".to_string(),
     }
 }
 
