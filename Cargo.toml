@@ -1,14 +1,9 @@
-[package]
-name = "prtsc"
+[workspace]
+resolver = "3"
+members = ["backend", "app"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Standalone window picker and screen capture tool with a ratatui UI rendered directly to its own window"
 license = "MIT OR Apache-2.0"
-
-[dependencies]
-fontdue = "0.9.4"
-ratatui = "0.30.2"
-softbuffer = "0.4.8"
-winit = "0.30.13"
-xcap = "0.9.8"

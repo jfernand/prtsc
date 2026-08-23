@@ -1,6 +1,7 @@
 //! The application window: a `winit` [`winit::application::ApplicationHandler`]
 //! that owns a `ratatui` [`ratatui::Terminal`] backed by
-//! [`crate::backend::WinitBackend`] and redraws it on a fixed frame interval.
+//! [`prtsc_backend::backend::WinitBackend`] and redraws it on a fixed frame
+//! interval.
 
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -14,8 +15,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::backend::WinitBackend;
-use crate::glyph::GlyphCache;
+use prtsc_backend::backend::WinitBackend;
+use prtsc_backend::glyph::GlyphCache;
+
 use crate::input::{self, Input};
 
 /// Target frame interval when the FPS cap is enabled (~62.5fps).

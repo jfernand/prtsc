@@ -2,11 +2,10 @@
 //! renders a `ratatui`-style monospace grid directly to its own pixel
 //! surface, with no external terminal emulator involved.
 //!
-//! This crate is currently application-shaped rather than a general-purpose
-//! library — [`run`] opens a window and drives its event loop until the
-//! window is closed. The [`glyph`] and [`backend`] modules (glyph
-//! rasterization/the monospace cell grid, and the `ratatui` `Backend` built
-//! on top of it) are the reusable parts and are documented as such.
+//! This crate is the application shell — [`run`] opens a window and drives
+//! its event loop until the window is closed. The reusable rendering layer
+//! (glyph rasterization and the `ratatui` `Backend` built on top of it)
+//! lives in the separate `prtsc-backend` crate this one depends on.
 //!
 //! # Examples
 //!
@@ -17,10 +16,6 @@
 
 /// The application window and its event loop.
 pub mod app;
-/// A `ratatui` `Backend` that renders into the window directly.
-pub mod backend;
-/// Glyph rasterization and the monospace cell grid.
-pub mod glyph;
 // Key-event-to-app-action mapping; internal to `app`, not part of the
 // reusable public API.
 mod input;

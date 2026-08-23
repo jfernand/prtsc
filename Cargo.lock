@@ -2754,11 +2754,20 @@ dependencies = [
 name = "prtsc"
 version = "0.1.0"
 dependencies = [
+ "prtsc-backend",
+ "ratatui",
+ "winit",
+ "xcap",
+]
+
+[[package]]
+name = "prtsc-backend"
+version = "0.1.0"
+dependencies = [
  "fontdue",
  "ratatui",
  "softbuffer",
  "winit",
- "xcap",
 ]
 
 [[package]]

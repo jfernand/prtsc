@@ -84,8 +84,8 @@ impl WinitBackend {
     /// ```no_run
     /// # // Needs a live winit window, so this doesn't run as a doctest.
     /// use std::rc::Rc;
-    /// use prtsc::backend::WinitBackend;
-    /// use prtsc::glyph::GlyphCache;
+    /// use prtsc_backend::backend::WinitBackend;
+    /// use prtsc_backend::glyph::GlyphCache;
     ///
     /// # fn example(window: Rc<winit::window::Window>) -> Result<(), Box<dyn std::error::Error>> {
     /// let backend = WinitBackend::new(window, GlyphCache::new(20.0))?;

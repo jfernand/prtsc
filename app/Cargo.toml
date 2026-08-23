@@ -1,0 +1,17 @@
+[package]
+name = "prtsc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Standalone window picker and screen capture tool with a ratatui UI rendered directly to its own window"
+
+[[bin]]
+name = "prtsc"
+path = "src/bin/prtsc.rs"
+
+[dependencies]
+prtsc-backend = { path = "../backend" }
+ratatui = "0.30.2"
+winit = "0.30.13"
+xcap = "0.9.8"
