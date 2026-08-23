@@ -10,13 +10,13 @@ use ratatui::Terminal;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::widgets::{Block, Paragraph, Sparkline};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 use crate::backend::WinitBackend;
 use crate::glyph::GlyphCache;
+use crate::input::{self, Input};
 
 /// Target frame interval when the FPS cap is enabled (~62.5fps).
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
@@ -89,47 +89,10 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => event_loop.exit(),
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Character(key),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if key.eq_ignore_ascii_case("f") => {
-                self.show_fps = !self.show_fps;
-                if self.show_fps {
-                    // Otherwise the first sample after enabling measures
-                    // against a `sample_window_start` that's however long
-                    // it's been since the counter was last on (or since
-                    // startup), producing one misleadingly-low bar.
-                    self.frames_since_sample = 0;
-                    self.sample_window_start = Instant::now();
+            WindowEvent::KeyboardInput { event, .. } => {
+                if let Some(input) = input::map_key(&event) {
+                    self.handle_input(input, event_loop);
                 }
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key: Key::Character(key),
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } if key.eq_ignore_ascii_case("c") => {
-                self.fps_cap = match self.fps_cap {
-                    Some(_) => None,
-                    None => Some(FRAME_INTERVAL),
-                };
             }
             WindowEvent::Resized(_) => {
                 if let Some(terminal) = &mut self.terminal {
@@ -177,6 +140,33 @@ impl ApplicationHandler for App {
 }
 
 impl App {
+    fn handle_input(&mut self, input: Input, event_loop: &ActiveEventLoop) {
+        match input {
+            Input::Quit => event_loop.exit(),
+            Input::ToggleFps => {
+                self.show_fps = !self.show_fps;
+                if self.show_fps {
+                    // Otherwise the first sample after enabling measures
+                    // against a `sample_window_start` that's however long
+                    // it's been since the counter was last on (or since
+                    // startup), producing one misleadingly-low bar.
+                    self.frames_since_sample = 0;
+                    self.sample_window_start = Instant::now();
+                }
+            }
+            Input::ToggleFpsCap => {
+                self.fps_cap = match self.fps_cap {
+                    Some(_) => None,
+                    None => Some(FRAME_INTERVAL),
+                };
+            }
+            // Wired up once the window-picker list exists (implementation
+            // plan step 7); mapped now so the translation layer is in place
+            // ahead of that.
+            Input::Up | Input::Down | Input::Enter => {}
+        }
+    }
+
     /// Takes one FPS sample if [`FPS_SAMPLE_INTERVAL`] has elapsed since
     /// the last one, updating `current_fps` and pushing into the history
     /// ring buffer used by the sparkline.
