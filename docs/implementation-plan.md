@@ -90,6 +90,18 @@ window resizes and ratatui re-lays-out content without stale artifacts
 **Verify:** resizing the window live re-flows a ratatui widget with no
 tearing/garbage pixels.
 
+**Known issue (unresolved):** live drag-resizing still shows occasional
+artifacts. One real bug in this area was found and fixed — `resize_surface`
+was re-querying `window.inner_size()` live instead of using the size the
+`WindowEvent::Resized` event itself carried, which raced during fast event
+bursts — but the user reports residual artifacts during live drag even after
+that fix. Not yet root-caused; revisit before considering step 5 fully done.
+Suspects worth checking first: whether `softbuffer`'s platform backend still
+has its own lazy/rotating-buffer resize behavior independent of our own
+buffer sizing (the same category of bug as the double-buffering flicker
+fixed earlier), and whether winit's Wayland `RedrawRequested`-during-resize
+gap (rust-windowing/winit#2609) interacts with our tick-driven redraw loop.
+
 ### 6. Keyboard input plumbing
 Map winit `KeyEvent`s to a small internal input enum (`Up`, `Down`, `Enter`,
 `Quit`, ...). Do not attempt to reuse `crossterm::event::KeyEvent` — winit's
