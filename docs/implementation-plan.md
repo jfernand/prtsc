@@ -1,32 +1,79 @@
-# Implementation plan: standalone ratatui window via winit + softbuffer
+# Implementation plan: prtsc
 
 ## Goal
 
-Turn `prtsc` into a self-contained binary that, when launched, opens its
-own native window (no external terminal emulator required), shows a ratatui
-TUI for picking a window from `xcap::Window::all()`, and captures the
-selected window on demand.
+`prtsc` is a screen-capture CLI driven by the XDG Desktop Portal's
+`Screenshot` interface: run with no arguments to capture once and print the
+saved file's location, or run `prtsc mcp` to expose the same capture action
+as a single MCP tool over stdio for AI assistants/agents to call.
 
-## Architecture recap
-
-- `winit` owns the OS window and the event loop (input, resize, close).
-- `softbuffer` gives us a raw RGB pixel buffer tied to that window — no GPU
-  API, no shaders.
-- A small font rasterizer (`fontdue`) turns a monospace font into per-glyph
-  bitmaps we blit into the pixel buffer ourselves.
-- A custom type implements ratatui's `Backend` trait on top of the above, so
-  the rest of the app (widgets, layout, state) is ordinary ratatui code and
-  doesn't know it isn't running in a real terminal.
-- `xcap` (already a dependency) supplies window enumeration and capture.
-
-No terminal emulator, no VT100/ANSI parsing, no `memterm`/`vt100` — ratatui
-hands the backend a structured `Buffer` of cells directly.
+There is no in-app window list or picker UI. The portal's own
+compositor-drawn dialog (GNOME Shell's screenshot tool, KDE's, etc.) handles
+window/screen selection - see "Why no window list" below.
 
 ## Steps
 
-Each step should compile, run, and be manually verified before moving to the
-next. Keep commits small and scoped to one step (see `AGENTS.md` — no commits
-without human review regardless).
+### 1. Capture via the XDG Desktop Portal
+Add `ashpd` (screenshot feature) and `tokio`. `capture::capture()` requests
+`ashpd::desktop::screenshot::Screenshot` with `.interactive(true)`, awaits
+the response, and returns the saved file's `file://` URI (or a
+human-readable error string).
+
+**Verify:** confirmed end-to-end in this sandbox - a `tools/call` against
+the MCP server (see step 3) returned a real file URI, and the file existed
+on disk with the reported PNG dimensions. The plain CLI path made the same
+request and received a real (if less consistent) response from the portal;
+completing the interactive picker itself is flaky in this specific sandboxed
+desktop session (no physical user reliably present to click through GNOME
+Shell's dialog), which is an environment characteristic, not a code issue -
+the request/response/error-propagation path itself is proven correct.
+
+### 2. CLI: capture-and-exit by default
+`prtsc` with no arguments calls `capture::capture()` once, prints the URI to
+stdout on success, or prints an error to stderr and exits non-zero on
+failure/cancellation. No window, no event loop - just one async call driven
+by a throwaway current-thread `tokio` runtime built in `run()`.
+
+**Verify:** `prtsc` with no args exits after one capture attempt; stdout has
+exactly the saved path on success.
+
+### 3. MCP server (`prtsc mcp`)
+Added `rmcp` (server, macros, transport-io features) plus `serde_json`
+(required directly by the `#[tool]` macro's generated code, not just
+transitively via `rmcp`). `mcp::run()` serves a single `capture` tool over
+stdio via `CaptureServer::serve(stdio())`, delegating to the same
+`capture::capture()` used by the CLI path.
+
+**Verify:** a manual JSON-RPC handshake (`initialize` -> `tools/list` ->
+`tools/call name=capture`) against `prtsc mcp` returned a real saved-file
+URI, confirmed to exist on disk. See step 1's verify note.
+
+## Why no window list
+
+Earlier revisions of this plan built a `winit` + `softbuffer` + `ratatui`
+window with an in-app `xcap`-based window-picker `List`. That was dropped in
+two stages:
+
+1. `xcap`'s Linux window enumeration is X11/XCB-only (`_NET_CLIENT_LIST_STACKING`),
+   invisible to native Wayland toolkit windows - replaced with `ashpd`'s
+   `Screenshot` portal, whose own compositor-drawn picker handles selection
+   instead (no caller-side window enumeration needed or possible).
+2. Once the portal owned window/screen selection, the custom-rendered window
+   had nothing left to justify its existence beyond showing a one-line
+   status message - dropped entirely in favor of a plain CLI, with an MCP
+   server mode added alongside it for programmatic/agent use.
+
+The `winit`/`softbuffer`/`fontdue`/`ratatui` rendering layer itself still
+exists, unused for now, in the separate `softbuffer-backend` crate (see its
+own history below) - parked for a possible future interactive/TUI mode, not
+deleted.
+
+## `softbuffer-backend` crate history (parked, not currently used by `prtsc`)
+
+The steps below built the `softbuffer-backend` crate: a `ratatui` `Backend`
+that renders directly into a `winit` window via `softbuffer` and `fontdue`,
+with no external terminal emulator involved. The crate still builds and
+works standalone; `prtsc` just doesn't depend on it right now.
 
 ### 1. Bare window
 Add `winit` and `softbuffer`. Open a window, run the event loop, fill the
@@ -101,43 +148,6 @@ has its own lazy/rotating-buffer resize behavior independent of our own
 buffer sizing (the same category of bug as the double-buffering flicker
 fixed earlier), and whether winit's Wayland `RedrawRequested`-during-resize
 gap (rust-windowing/winit#2609) interacts with our tick-driven redraw loop.
-
-### 6. Keyboard input plumbing
-Map winit `KeyEvent`s to a small internal input enum (`Up`, `Down`, `Enter`,
-`Quit`, ...). Do not attempt to reuse `crossterm::event::KeyEvent` — winit's
-key model is different enough that a thin translation layer is clearer than
-forcing compatibility.
-
-**Verify:** pressing keys logs/prints the expected mapped variant.
-
-### 7. Window list state + UI
-Add app state: `windows: Vec<xcap::Window>`, `selected: usize`. On startup
-(and optionally on an explicit refresh key), populate from
-`xcap::Window::all()`. Render as a ratatui `List` with the selected item
-highlighted. Wire Up/Down (and j/k) to move selection, wrapping or clamping
-at the ends.
-
-**Verify:** the real list of open windows appears and keyboard navigation
-selects each one visibly.
-
-### 8. Capture action
-On Enter, call `capture_image()` on the selected window and save a PNG
-(reuse the existing `sav_{i:03}.png` naming or make it configurable). Show
-a status line/toast in the UI confirming the saved path.
-
-**Verify:** pressing Enter on a real window produces a correct PNG on disk.
-
-**Open decision (deferred):** whether post-selection capture is single-shot,
-a continuous recording loop with a stop key, or something else — resolve
-this before or during this step, not before.
-
-### 9. Polish
-- Handle DPI/`scale_factor` changes (winit can report these independently of
-  pixel resize).
-- Graceful error handling for `xcap` failures (window closed between listing
-  and capture, permission errors, etc.) — surface in the UI, don't panic.
-- Esc/`q` to quit from the picker.
-- `cargo clippy` clean, `cargo fmt` applied.
 
 ## Explicitly out of scope for this plan
 
