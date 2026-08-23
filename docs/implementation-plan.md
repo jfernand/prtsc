@@ -48,7 +48,7 @@ stdio via `CaptureServer::serve(stdio())`, delegating to the same
 `tools/call name=capture`) against `prtsc mcp` returned a real saved-file
 URI, confirmed to exist on disk. See step 1's verify note.
 
-## Screen recording (planned, not yet implemented)
+## Screen recording (implemented, portal interaction unverified in this sandbox)
 
 `prtsc record [path]` will record a screencast to a `.webm` file via the
 XDG Desktop Portal's `ScreenCast` interface, following the same
@@ -79,71 +79,92 @@ compiler at build time, but - unlike `ffmpeg-next` - it's statically
 linked, so there's no runtime `.so` dependency on the machine that runs
 the built `prtsc` binary.
 
-### 1. Portal session negotiation
-Add the `screencast` feature to `ashpd`. `Screencast::new()` ->
-`create_session()` -> `select_sources(session, SelectSourcesOptions)` ->
-`start(session, None, StartCastOptions)` returns `Streams`, each with a
-`pipe_wire_node_id()` and size. `open_pipe_wire_remote(session, ..)`
-returns an `OwnedFd` scoped to just that session/stream.
+### 1. Portal session negotiation - done (`prtsc/src/screencast.rs`)
+`Screencast::new()` -> `create_session()` -> `select_sources(session,
+SelectSourcesOptions)` -> `start(session, None, ..)` returns `Streams`,
+each with a `pipe_wire_node_id()` and size. `open_pipe_wire_remote(session,
+..)` returns an `OwnedFd` scoped to just that session/stream. The ashpd
+`Session` is kept alive (moved whole into the recording thread's closure)
+for the entire recording - dropping it early would end the cast portal-side.
 
-**Verify:** print the negotiated node id + stream size; confirm it
-matches what was picked in the compositor's dialog.
+**Verify:** reaches the real portal (`xdg-desktop-portal-gnome`, installed
+earlier in this session) and triggers its native screen-share picker -
+confirmed via `journalctl` activity - but completing that picker
+interactively isn't possible in this sandbox: unlike some GTK dialogs,
+GNOME Shell's screen-share picker has no X11/XWayland-visible surface at
+all (confirmed - no new window appeared under `xdotool search`), so it
+can't be clicked through here. Same class of limitation already accepted
+for `capture`'s `Screenshot` portal earlier in this project.
 
-### 2. Raw frame capture on a dedicated thread
-Add the `pipewire` crate (`v1_0_0` feature, matching this system's
-installed `libpipewire-0.3` 1.0.5). PipeWire's mainloop is a blocking C
-loop, not async, so it needs its own `std::thread`.
-`ContextRc::connect_fd_rc(fd, ..)` (takes the fd from step 1) -> build a
-video `Stream`, negotiate format via an SPA `EnumFormat` pod (candidate
-pixel formats/size range/framerate range - same shape as the `pipewire`
-crate's own `examples/streams.rs`), `connect()` targeting the node id
-from step 1. The `process` callback dequeues buffers and forwards raw
-frame bytes (plus negotiated format/stride) over an `mpsc::channel` to
-the encoder thread.
+### 2. Raw frame capture + encode on one dedicated thread - done (`prtsc/src/recording.rs`)
+Simplified from the original plan: encoding happens directly inside
+PipeWire's `process` callback, on the same thread as its mainloop,
+rather than forwarding frames over a channel to a separate encoder
+thread - one thread doing dequeue -> convert -> encode -> mux keeps the
+first working version simple; revisit only if profiling ever shows the
+encoder is slow enough to drop PipeWire buffers.
 
-**Verify:** log frame count/size for a few seconds of a real session;
-confirm roughly the expected framerate.
+`ContextRc::connect_fd_rc(fd, ..)` (the fd from step 1) -> a video
+`Stream`, format negotiated via an SPA `EnumFormat` pod offering the
+pixel layouts `openh264` can consume directly (BGRx/BGRA/RGBx/RGBA -
+same pod-building shape as the `pipewire` crate's own
+`examples/streams.rs`) at the portal's reported size. Ctrl-C/SIGTERM
+handling is PipeWire's own (`main_loop.loop_().add_signal_local(Signal::INT/TERM,
+..)`, the same idiom as the crate's `pw-mon.rs` example) rather than
+routed through `tokio` - simpler, since the whole capture/encode loop is
+already isolated on its own thread.
 
-### 3. RGB -> YUV420 conversion, rav1e encode, webm mux
-PipeWire hands back interleaved RGBA/BGRx frames; `rav1e` only accepts
-planar YUV 4:2:0 (`frame.planes[0/1/2].copy_from_raw_u8(..)`, confirmed
-against `rav1e`'s own y4m reader). Write a plain BT.601 + 2x2
-chroma-averaging conversion function - no new dependency, just
-arithmetic.
+**Verify:** not exercisable end-to-end here - blocked on step 1's portal
+interaction. See step 3 for how the encode/mux logic (the actual
+hand-written, error-prone part) was verified independently instead.
 
-Encode loop: `EncoderConfig { width, height, chroma_sampling: Cs420, .. }`
--> `Config::new().with_encoder_config(..).new_context()` -> per frame:
-`ctx.new_frame()`, fill planes, `ctx.send_frame(..)`, drain
-`ctx.receive_packet()` (handling `NeedMoreData`/`Encoded`/`LimitReached`).
+### 3. H.264 encode via openh264, mux to MP4 - done, verified independently of PipeWire
+Convert each raw frame with `YUVBuffer::from_bgra8_source(BgraSliceU8::new(bytes, (w, h)))`
+(or the RGBA equivalent) - `openh264` ships this conversion built in, no
+hand-rolled color-space math needed. `Encoder::encode(&yuv_buffer)` ->
+`EncodedBitStream`, whose `layer(i)`/`nal_unit(n)` accessors expose
+individual Annex-B NAL units directly; the *first* IDR frame's SPS (NAL
+type 7) and PPS (NAL type 8) get pulled out to build
+`mp4::AvcConfig { .. }` before `Mp4Writer::add_track` - the one place NAL
+type bytes get inspected by hand. Other NALs are converted from Annex-B
+to AVCC (4-byte length prefix) and written via `Mp4Writer::write_sample`.
+PipeWire buffers can have row padding (`stride > width * 4`); a
+`repack_rows` helper strips it before handing data to `openh264`'s slice
+wrappers, which assert on exactly `width * height * 4` bytes.
 
-Mux: `Writer::new(file)` -> `SegmentBuilder::new(writer)?.set_mode(Live)?
-.add_video_track(w, h, VideoCodecId::AV1, None)?.build()` -> per packet:
-`segment.add_frame(track, &packet.data, timestamp_ns, keyframe)` ->
-`segment.finalize(None)` on stop.
-
-**Verify:** resulting `.webm` file is valid and playable
-(`ffprobe`/a real player), roughly matching the recorded duration.
+**Verify:** since step 1 blocks any real capture, added a `#[cfg(test)]`
+unit test (`recording::tests::encodes_synthetic_frames_to_a_readable_mp4`)
+that calls `encode_frame` directly with synthetic pixel data, bypassing
+PipeWire/the portal entirely, then reads the result back with the `mp4`
+crate's own reader (track count, track type, sample count). Additionally
+confirmed with tools outside this codebase: `ffprobe` identifies the
+output as valid `h264 (Constrained Baseline) yuv420p`, and `ffmpeg -i ...
+-f null -` decodes every frame without error. This isolates and verifies
+exactly the hand-written, highest-risk logic (NAL parsing, SPS/PPS
+extraction, AVCC framing, MP4 sample writing) independently of whether a
+real PipeWire session is available.
 
 ### 4. Start/stop lifecycle
-- CLI: `prtsc record [path]` runs until Ctrl-C (SIGINT), then cleanly
-  stops the stream/encoder/muxer and prints the saved path - mirrors the
-  existing "print path on success" convention from plain `capture`.
-- MCP: two tools, `start_recording` / `stop_recording`, since the MCP
-  server process is long-lived (unlike the one-shot `capture` tool) and
-  can hold the recording thread/channel handles as state between calls.
+- CLI: done - `prtsc record [path]` runs until Ctrl-C/SIGTERM, then
+  cleanly finalizes and prints the saved path, mirroring `capture`'s
+  "print path on success" convention.
+- MCP `start_recording`/`stop_recording`: not yet done. Needs the
+  recording thread's handle/stop-signal to live in `CaptureServer`'s
+  state across two separate tool calls (unlike the one-shot `capture`
+  tool) - deferred as a follow-up.
 
-**Verify:** both paths produce a playable file.
+**Verify:** CLI path type-checks and the encode/mux half is verified per
+step 3; full run blocked on step 1's portal interaction, same as above.
 
-### 5. Polish
+### 5. Polish - not yet done
 - Handle portal cancellation cleanly (same error-surfacing pattern
-  `capture` already has).
-- Decide default output naming/location (mirror GNOME's
-  `~/Videos/Screencasts/` convention, or require an explicit path arg).
-- `cargo clippy` / `cargo fmt`.
-
-**Known risk:** step 2's SPA pod format negotiation is fiddly,
-low-level, C-binding-shaped code - worth prototyping standalone before
-wiring into `prtsc` proper.
+  `capture` already has) - `screencast::negotiate` does return `Err` on
+  failure already, but the "user closed the picker without choosing
+  anything" case specifically hasn't been exercised.
+- Decide default output naming/location - currently just `recording.mp4`
+  in the working directory when no path is given; GNOME's
+  `~/Videos/Screencasts/` convention not yet adopted.
+- `cargo clippy` / `cargo fmt` - clean as of this pass.
 
 ## Why no window list
 
