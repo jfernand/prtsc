@@ -5,7 +5,7 @@
 //! This crate is the application shell — [`run`] opens a window and drives
 //! its event loop until the window is closed. The reusable rendering layer
 //! (glyph rasterization and the `ratatui` `Backend` built on top of it)
-//! lives in the separate `prtsc-backend` crate this one depends on.
+//! lives in the separate `softbuffer-backend` crate this one depends on.
 //!
 //! # Examples
 //!

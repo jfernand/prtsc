@@ -2754,20 +2754,10 @@ dependencies = [
 name = "prtsc"
 version = "0.1.0"
 dependencies = [
- "prtsc-backend",
  "ratatui",
+ "softbuffer-backend",
  "winit",
  "xcap",
-]
-
-[[package]]
-name = "prtsc-backend"
-version = "0.1.0"
-dependencies = [
- "fontdue",
- "ratatui",
- "softbuffer",
- "winit",
 ]
 
 [[package]]
@@ -3302,6 +3292,16 @@ dependencies = [
  "web-sys",
  "windows-sys 0.61.2",
  "x11rb",
+]
+
+[[package]]
+name = "softbuffer-backend"
+version = "0.1.0"
+dependencies = [
+ "fontdue",
+ "ratatui",
+ "softbuffer",
+ "winit",
 ]
 
 [[package]]

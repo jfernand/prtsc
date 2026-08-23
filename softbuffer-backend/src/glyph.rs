@@ -108,7 +108,7 @@ impl<'a> PixelBuf<'a> {
 /// # Examples
 ///
 /// ```
-/// use prtsc_backend::glyph::GlyphCache;
+/// use softbuffer_backend::glyph::GlyphCache;
 ///
 /// let cache = GlyphCache::new(20.0);
 /// assert!(cache.cell_width > 0);
@@ -141,7 +141,7 @@ impl GlyphCache {
     /// # Examples
     ///
     /// ```
-    /// use prtsc_backend::glyph::GlyphCache;
+    /// use softbuffer_backend::glyph::GlyphCache;
     ///
     /// let cache = GlyphCache::new(20.0);
     /// ```
@@ -189,7 +189,7 @@ impl GlyphCache {
     /// # Examples
     ///
     /// ```
-    /// use prtsc_backend::glyph::{GlyphCache, PixelBuf};
+    /// use softbuffer_backend::glyph::{GlyphCache, PixelBuf};
     ///
     /// let cache = GlyphCache::new(20.0);
     /// let (width, height) = (200, 100);
