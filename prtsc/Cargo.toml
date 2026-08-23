@@ -4,16 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Standalone window picker and screen capture tool with a ratatui UI rendered directly to its own window"
+description = "Screen capture CLI driven by the XDG Desktop Portal's screenshot picker"
 
 [[bin]]
 name = "prtsc"
 path = "src/bin/prtsc.rs"
 
 [dependencies]
-softbuffer-backend = { path = "../softbuffer-backend" }
-ratatui = "0.30.2"
-winit = "0.30.13"
-xcap = "0.9.8"
 ashpd = { version = "0.13.13", features = ["screenshot"] }
 tokio = { version = "1", features = ["rt", "net", "time"] }

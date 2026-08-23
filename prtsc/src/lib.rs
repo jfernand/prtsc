@@ -1,29 +1,34 @@
-//! A standalone screen-capture tool: a `winit` + `softbuffer` window that
-//! renders a `ratatui`-style monospace grid directly to its own pixel
-//! surface, with no external terminal emulator involved.
-//!
-//! This crate is the application shell — [`run`] opens a window and drives
-//! its event loop until the window is closed. The reusable rendering layer
-//! (glyph rasterization and the `ratatui` `Backend` built on top of it)
-//! lives in the separate `softbuffer-backend` crate this one depends on.
-//!
-//! # Examples
-//!
-//! ```no_run
-//! prtsc::run();
-//! ```
+//! A screen-capture CLI tool built on the XDG Desktop Portal's screenshot
+//! picker: `prtsc` captures once and prints the saved location.
 #![warn(missing_docs)]
 
-/// The application window and its event loop.
-pub mod app;
-// Screenshot-portal plumbing; internal to `app`, not part of the reusable
-// public API.
 mod capture;
-// Key-event-to-app-action mapping; internal to `app`, not part of the
-// reusable public API.
-mod input;
 
-/// Opens the application window and runs its event loop until closed.
+/// Captures once via the XDG Desktop Portal's screenshot picker, printing
+/// the saved location to stdout on success or an error to stderr on
+/// failure/cancellation (with a non-zero exit code).
 ///
-/// See [`app::run`] for details.
-pub use app::run;
+/// # Examples
+///
+/// ```no_run
+/// // Blocks on a real portal request, so this is `no_run` rather than an
+/// // executed doctest.
+/// prtsc::run();
+/// ```
+pub fn run() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+    runtime.block_on(capture_once());
+}
+
+async fn capture_once() {
+    match capture::capture().await {
+        Ok(uri) => println!("{uri}"),
+        Err(err) => {
+            eprintln!("capture failed: {err}");
+            std::process::exit(1);
+        }
+    }
+}
