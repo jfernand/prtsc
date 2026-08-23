@@ -48,6 +48,103 @@ stdio via `CaptureServer::serve(stdio())`, delegating to the same
 `tools/call name=capture`) against `prtsc mcp` returned a real saved-file
 URI, confirmed to exist on disk. See step 1's verify note.
 
+## Screen recording (planned, not yet implemented)
+
+`prtsc record [path]` will record a screencast to a `.webm` file via the
+XDG Desktop Portal's `ScreenCast` interface, following the same
+portal-only philosophy as capture: no window/screen enumeration in
+`prtsc` itself, the compositor's own picker chooses the source.
+
+**Encoder/container decision:** AV1 (`rav1e`) + WebM (`webm` crate),
+not `ffmpeg`/libav. Ruled out two alternatives first:
+- Shelling out to the `ffmpeg` binary via a piped child process - works,
+  but process lifecycle/error handling through exit codes is fragile
+  compared to a library call.
+- `ffmpeg-next` (FFI bindings to libavcodec/libavformat) - needs matching
+  `libav*-dev` headers at build time and matching `.so` files at runtime
+  on whatever machine eventually runs `prtsc`; H.264 support specifically
+  depends on how that machine's libavcodec was built (patent-encumbered
+  codecs are often excluded from distro packaging).
+- `openh264` (H.264) was also considered and rejected: its `source`
+  feature compiles OpenH264 from source, which falls outside Cisco's
+  royalty coverage for the underlying H.264 patents (that coverage is
+  tied specifically to Cisco's own prebuilt binary, confirmed against
+  OpenH264's own `BINARY_LICENSE.txt` and FAQ) - AV1 has no such
+  patent-royalty story at all, which is the deciding factor.
+
+The `webm` crate is not pure Rust - it's FFI bindings to Google's
+`libwebm` C++ library, vendored and compiled by `cc` at build time (its
+`build.rs` compiles `libwebm/mkvmuxer/*.cc` directly). That needs a C++
+compiler at build time, but - unlike `ffmpeg-next` - it's statically
+linked, so there's no runtime `.so` dependency on the machine that runs
+the built `prtsc` binary.
+
+### 1. Portal session negotiation
+Add the `screencast` feature to `ashpd`. `Screencast::new()` ->
+`create_session()` -> `select_sources(session, SelectSourcesOptions)` ->
+`start(session, None, StartCastOptions)` returns `Streams`, each with a
+`pipe_wire_node_id()` and size. `open_pipe_wire_remote(session, ..)`
+returns an `OwnedFd` scoped to just that session/stream.
+
+**Verify:** print the negotiated node id + stream size; confirm it
+matches what was picked in the compositor's dialog.
+
+### 2. Raw frame capture on a dedicated thread
+Add the `pipewire` crate (`v1_0_0` feature, matching this system's
+installed `libpipewire-0.3` 1.0.5). PipeWire's mainloop is a blocking C
+loop, not async, so it needs its own `std::thread`.
+`ContextRc::connect_fd_rc(fd, ..)` (takes the fd from step 1) -> build a
+video `Stream`, negotiate format via an SPA `EnumFormat` pod (candidate
+pixel formats/size range/framerate range - same shape as the `pipewire`
+crate's own `examples/streams.rs`), `connect()` targeting the node id
+from step 1. The `process` callback dequeues buffers and forwards raw
+frame bytes (plus negotiated format/stride) over an `mpsc::channel` to
+the encoder thread.
+
+**Verify:** log frame count/size for a few seconds of a real session;
+confirm roughly the expected framerate.
+
+### 3. RGB -> YUV420 conversion, rav1e encode, webm mux
+PipeWire hands back interleaved RGBA/BGRx frames; `rav1e` only accepts
+planar YUV 4:2:0 (`frame.planes[0/1/2].copy_from_raw_u8(..)`, confirmed
+against `rav1e`'s own y4m reader). Write a plain BT.601 + 2x2
+chroma-averaging conversion function - no new dependency, just
+arithmetic.
+
+Encode loop: `EncoderConfig { width, height, chroma_sampling: Cs420, .. }`
+-> `Config::new().with_encoder_config(..).new_context()` -> per frame:
+`ctx.new_frame()`, fill planes, `ctx.send_frame(..)`, drain
+`ctx.receive_packet()` (handling `NeedMoreData`/`Encoded`/`LimitReached`).
+
+Mux: `Writer::new(file)` -> `SegmentBuilder::new(writer)?.set_mode(Live)?
+.add_video_track(w, h, VideoCodecId::AV1, None)?.build()` -> per packet:
+`segment.add_frame(track, &packet.data, timestamp_ns, keyframe)` ->
+`segment.finalize(None)` on stop.
+
+**Verify:** resulting `.webm` file is valid and playable
+(`ffprobe`/a real player), roughly matching the recorded duration.
+
+### 4. Start/stop lifecycle
+- CLI: `prtsc record [path]` runs until Ctrl-C (SIGINT), then cleanly
+  stops the stream/encoder/muxer and prints the saved path - mirrors the
+  existing "print path on success" convention from plain `capture`.
+- MCP: two tools, `start_recording` / `stop_recording`, since the MCP
+  server process is long-lived (unlike the one-shot `capture` tool) and
+  can hold the recording thread/channel handles as state between calls.
+
+**Verify:** both paths produce a playable file.
+
+### 5. Polish
+- Handle portal cancellation cleanly (same error-surfacing pattern
+  `capture` already has).
+- Decide default output naming/location (mirror GNOME's
+  `~/Videos/Screencasts/` convention, or require an explicit path arg).
+- `cargo clippy` / `cargo fmt`.
+
+**Known risk:** step 2's SPA pod format negotiation is fiddly,
+low-level, C-binding-shaped code - worth prototyping standalone before
+wiring into `prtsc` proper.
+
 ## Why no window list
 
 Earlier revisions of this plan built a `winit` + `softbuffer` + `ratatui`
@@ -154,4 +251,5 @@ gap (rust-windowing/winit#2609) interacts with our tick-driven redraw loop.
 - Any VT100/ANSI parsing (`memterm`, `vt100`) — not needed since ratatui
   never emits an escape-sequence stream to this backend.
 - Multi-window / tabbed capture UI.
-- Video/GIF recording (only still-frame PNG capture per the steps above).
+- GIF recording (see "Screen recording" above for video - GIF specifically
+  is out of scope).
