@@ -15,3 +15,5 @@ softbuffer-backend = { path = "../softbuffer-backend" }
 ratatui = "0.30.2"
 winit = "0.30.13"
 xcap = "0.9.8"
+ashpd = { version = "0.13.13", features = ["screenshot"] }
+tokio = { version = "1", features = ["rt", "net", "time"] }

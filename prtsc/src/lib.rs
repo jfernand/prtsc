@@ -16,6 +16,9 @@
 
 /// The application window and its event loop.
 pub mod app;
+// Screenshot-portal plumbing; internal to `app`, not part of the reusable
+// public API.
+mod capture;
 // Key-event-to-app-action mapping; internal to `app`, not part of the
 // reusable public API.
 mod input;
