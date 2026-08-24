@@ -2341,6 +2341,7 @@ dependencies = [
  "openh264",
  "pipewire",
  "rmcp",
+ "serde",
  "serde_json",
  "tokio",
 ]
