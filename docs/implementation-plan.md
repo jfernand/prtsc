@@ -145,21 +145,53 @@ exactly the hand-written, highest-risk logic (NAL parsing, SPS/PPS
 extraction, AVCC framing, MP4 sample writing) independently of whether a
 real PipeWire session is available.
 
-### 4. Start/stop lifecycle
-- CLI: done - `prtsc record [path]` runs until Ctrl-C/SIGTERM, then
-  cleanly finalizes and prints the saved path, mirroring `capture`'s
-  "print path on success" convention.
-- MCP `start_recording`/`stop_recording`: not yet done. Needs the
-  recording thread's handle/stop-signal to live in `CaptureServer`'s
-  state across two separate tool calls (unlike the one-shot `capture`
-  tool) - deferred as a follow-up.
+### 4. Start/stop lifecycle - done
+- CLI: `prtsc record [path]` runs until Ctrl-C/SIGTERM, then cleanly
+  finalizes and prints the saved path, mirroring `capture`'s "print
+  path on success" convention.
+- MCP: `start_recording` (optional `path` parameter) negotiates the
+  portal session and spawns the recording thread, returning once
+  recording has actually begun; `stop_recording` signals it to stop and
+  returns the saved file's location. `CaptureServer` holds at most one
+  `RecordingHandle` (`Arc<Mutex<Option<..>>>`, since tool methods take
+  `&self`) between the two calls - `start_recording` while one is
+  already active, or `stop_recording` with none active, both return a
+  clear tool-level error rather than panicking or silently no-opping.
 
-**Verify:** confirmed - `prtsc record` run to completion, Ctrl-C'd
-partway through, produced a playable file with the path printed on
-stdout. Prints `Recording to <path>...` (stderr) once the output file
-is created and setup begins, and `Wrote N frames, WxH, D.Ds, S KiB ->
-<path>` (stderr) after `write_end()` succeeds - stdout stays reserved
-for just the final path, matching `capture`'s convention.
+**Stop mechanism unified across both paths, and simplified along the
+way.** Originally the CLI used PipeWire's own OS-signal handling
+(`add_signal_local`, protected by manually blocking `SIGINT`/`SIGTERM`
+with `libc::pthread_sigmask` - see the bugs above) - not usable for MCP
+at all, since `stop_recording` needs to signal a *specific* recording
+from a normal async tool call, not send a process-wide OS signal
+(which would also kill the MCP server itself). Switched both to
+[`pipewire::channel`](https://docs.rs/pipewire/latest/pipewire/channel/index.html),
+a `Sender`/`Receiver` pair built for exactly this: sending a message
+from any thread to one attached to a running PipeWire loop.
+`recording::record` now takes a `Receiver<Terminate>` and quits on
+receipt, replacing both signal handlers with one code path. The CLI
+translates Ctrl-C/SIGTERM into a `Terminate` message via
+`tokio::signal::ctrl_c()`/`tokio::signal::unix::signal(SignalKind::terminate())`
+(needed wrapping the thread's blocking `.join()` in
+`tokio::task::spawn_blocking` so it could be raced against those in a
+`tokio::select!`, rather than joined directly as before); the MCP
+server just sends it from `stop_recording`. This also let the `libc`
+dependency and the manual signal-masking code be dropped entirely -
+`tokio::signal` handles the OS side correctly without it.
+
+**Verify:** confirmed on real desktop recordings via both paths.
+CLI: run to completion, Ctrl-C'd and separately SIGTERM'd (two
+separate real recordings) - both produced valid, playable files with
+the path printed on stdout, `Recording to <path>...` printed as soon
+as setup begins and `Wrote N frames, WxH, D.Ds, S KiB -> <path>` after
+`write_end()` succeeds (both stderr, keeping stdout reserved for just
+the final path). MCP: a JSON-RPC test script drove
+`start_recording` -> wait -> `stop_recording` end-to-end - produced a
+real 3840x2160, 32-frame recording confirmed valid with
+`ffprobe`/`ffmpeg`. Also confirmed the state-management error paths:
+`stop_recording` with nothing in progress, and `start_recording`
+called twice without an intervening `stop_recording`, both return the
+expected tool-level error rather than misbehaving.
 
 ## Bugs found via real-session testing
 
@@ -187,10 +219,13 @@ found across two rounds of live testing on a real desktop session:
    the recording thread, skipping `write_end()` entirely. Observed
    directly: an unpatched Ctrl-C left a 48-byte MP4 (just the `ftyp` +
    empty `mdat` from `write_start()`, confirmed via `xxd`) with no track
-   and no video data. Fixed by blocking both signals
+   and no video data. Fixed at the time by blocking both signals
    (`libc::pthread_sigmask(SIG_BLOCK, ..)`) on the calling thread
    *before* spawning the recording thread, so the blocked mask is
    inherited and PipeWire's handler is the only possible consumer.
+   **Superseded** when MCP `start_recording`/`stop_recording` were
+   added (step 4) - `pipewire::channel` replaced this entirely for both
+   the CLI and MCP, and the `libc` dependency was dropped.
 
 3. **Framerate negotiation failure.** Added a `VideoFramerate` SPA
    property to the `EnumFormat` pod (min `1/1`, max `30/1`) to address
