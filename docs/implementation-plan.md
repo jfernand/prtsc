@@ -48,36 +48,35 @@ stdio via `CaptureServer::serve(stdio())`, delegating to the same
 `tools/call name=capture`) against `prtsc mcp` returned a real saved-file
 URI, confirmed to exist on disk. See step 1's verify note.
 
-## Screen recording (implemented, portal interaction unverified in this sandbox)
+## Screen recording (implemented and verified end-to-end on a real desktop session)
 
-`prtsc record [path]` will record a screencast to a `.webm` file via the
+`prtsc record [path]` records a screencast to an `.mp4` file via the
 XDG Desktop Portal's `ScreenCast` interface, following the same
 portal-only philosophy as capture: no window/screen enumeration in
 `prtsc` itself, the compositor's own picker chooses the source.
 
-**Encoder/container decision:** AV1 (`rav1e`) + WebM (`webm` crate),
-not `ffmpeg`/libav. Ruled out two alternatives first:
-- Shelling out to the `ffmpeg` binary via a piped child process - works,
-  but process lifecycle/error handling through exit codes is fragile
-  compared to a library call.
-- `ffmpeg-next` (FFI bindings to libavcodec/libavformat) - needs matching
-  `libav*-dev` headers at build time and matching `.so` files at runtime
-  on whatever machine eventually runs `prtsc`; H.264 support specifically
-  depends on how that machine's libavcodec was built (patent-encumbered
-  codecs are often excluded from distro packaging).
-- `openh264` (H.264) was also considered and rejected: its `source`
-  feature compiles OpenH264 from source, which falls outside Cisco's
-  royalty coverage for the underlying H.264 patents (that coverage is
-  tied specifically to Cisco's own prebuilt binary, confirmed against
-  OpenH264's own `BINARY_LICENSE.txt` and FAQ) - AV1 has no such
-  patent-royalty story at all, which is the deciding factor.
+**Encoder/container decision (final): H.264 (`openh264`) + MP4 (`mp4`
+crate).** AV1 (`rav1e`) + WebM (`webm` crate) was the original plan;
+revised deliberately in favor of H.264's much broader
+playback/hardware-decode compatibility over AV1. `openh264`'s `source`
+feature compiles OpenH264 from source, which is outside Cisco's royalty
+coverage for the underlying H.264 patents (that coverage is tied
+specifically to Cisco's own prebuilt binary, per OpenH264's
+`BINARY_LICENSE.txt`/FAQ) - a real, acknowledged tradeoff, accepted
+deliberately. Two other alternatives were ruled out earlier still:
+shelling out to the `ffmpeg` binary via a piped child process (fragile
+process-lifecycle/error-handling compared to a library call), and
+`ffmpeg-next` (FFI bindings to libavcodec/libavformat - needs matching
+`libav*-dev` headers at build time and matching `.so` files at runtime
+on whatever machine eventually runs `prtsc`, with H.264 support itself
+depending on how that machine's libavcodec was built).
 
-The `webm` crate is not pure Rust - it's FFI bindings to Google's
-`libwebm` C++ library, vendored and compiled by `cc` at build time (its
-`build.rs` compiles `libwebm/mkvmuxer/*.cc` directly). That needs a C++
-compiler at build time, but - unlike `ffmpeg-next` - it's statically
-linked, so there's no runtime `.so` dependency on the machine that runs
-the built `prtsc` binary.
+Concretely simpler than expected: `openh264` ships its own
+`YUVBuffer::from_bgra8_source`/`from_rgba8_source` conversion helpers, so
+the RGB -> YUV420 step originally planned as hand-rolled arithmetic is
+just a library call. The `mp4` crate is pure Rust (no C/C++ dependency at
+all, unlike the earlier `webm` crate, which was FFI bindings to Google's
+`libwebm` C++ library).
 
 ### 1. Portal session negotiation - done (`prtsc/src/screencast.rs`)
 `Screencast::new()` -> `create_session()` -> `select_sources(session,
@@ -87,14 +86,13 @@ each with a `pipe_wire_node_id()` and size. `open_pipe_wire_remote(session,
 `Session` is kept alive (moved whole into the recording thread's closure)
 for the entire recording - dropping it early would end the cast portal-side.
 
-**Verify:** reaches the real portal (`xdg-desktop-portal-gnome`, installed
-earlier in this session) and triggers its native screen-share picker -
-confirmed via `journalctl` activity - but completing that picker
-interactively isn't possible in this sandbox: unlike some GTK dialogs,
-GNOME Shell's screen-share picker has no X11/XWayland-visible surface at
-all (confirmed - no new window appeared under `xdotool search`), so it
-can't be clicked through here. Same class of limitation already accepted
-for `capture`'s `Screenshot` portal earlier in this project.
+**Verify:** confirmed end-to-end on a real desktop session (this sandbox
+*is* a real GNOME session - the earlier "unverified" note was about
+`xdotool`/X11 tooling being unable to click through GNOME Shell's
+Wayland-native share picker, not about the session being non-interactive;
+the human user completed the picker directly). Produced a real, playable
+1920x1080 H.264/MP4 recording - confirmed with `ffprobe`, a full
+`ffmpeg` decode, and by extracting and viewing an actual captured frame.
 
 ### 2. Raw frame capture + encode on one dedicated thread - done (`prtsc/src/recording.rs`)
 Simplified from the original plan: encoding happens directly inside
@@ -114,9 +112,12 @@ handling is PipeWire's own (`main_loop.loop_().add_signal_local(Signal::INT/TERM
 routed through `tokio` - simpler, since the whole capture/encode loop is
 already isolated on its own thread.
 
-**Verify:** not exercisable end-to-end here - blocked on step 1's portal
-interaction. See step 3 for how the encode/mux logic (the actual
-hand-written, error-prone part) was verified independently instead.
+**Verify:** confirmed on a real recording (see step 1) - real frames
+arrived, were encoded, and were muxed into a playable file. Two real
+bugs surfaced only by this real-session test (neither the unit test in
+step 3 nor any code review caught them, since both are specific to
+actually running PipeWire's mainloop for real) - see "Bugs found via
+real-session testing" below.
 
 ### 3. H.264 encode via openh264, mux to MP4 - done, verified independently of PipeWire
 Convert each raw frame with `YUVBuffer::from_bgra8_source(BgraSliceU8::new(bytes, (w, h)))`
@@ -153,8 +154,39 @@ real PipeWire session is available.
   state across two separate tool calls (unlike the one-shot `capture`
   tool) - deferred as a follow-up.
 
-**Verify:** CLI path type-checks and the encode/mux half is verified per
-step 3; full run blocked on step 1's portal interaction, same as above.
+**Verify:** confirmed - `prtsc record` run to completion, Ctrl-C'd
+partway through, produced a playable file with the path printed on
+stdout.
+
+## Bugs found via real-session testing
+
+Two real bugs, neither catchable by the unit test or code review since
+both are specific to actually running PipeWire's mainloop for real:
+
+1. **Thread-naming panic.** `pipewire-rs` asserts its mainloop is
+   created on a thread literally named `"main"`
+   (`utils::assert_main_thread`, checked from `Loop::add_signal_local`).
+   The recording thread was originally spawned via
+   `tokio::task::spawn_blocking`, whose worker threads are named
+   `"tokio-rt-worker"` - an immediate panic the moment a real recording
+   reached that code path. Fixed by spawning a plain `std::thread`
+   explicitly named `"main"` via `std::thread::Builder` instead, and
+   `.join()`-ing it directly (blocking is fine - the `current_thread`
+   tokio runtime has nothing else to do concurrently during a recording).
+
+2. **Signal race on Ctrl-C.** Without blocking `SIGINT`/`SIGTERM` at the
+   OS level before spawning the recording thread, the kernel is free to
+   deliver the signal to *either* thread in the process. If it picked the
+   real async/main thread (which never touches PipeWire and has no
+   custom handler), Rust's default disposition - terminate immediately -
+   could win the race against PipeWire's own signalfd-based handling on
+   the recording thread, skipping `write_end()` entirely. Observed
+   directly: an unpatched Ctrl-C left a 48-byte MP4 (just the `ftyp` +
+   empty `mdat` from `write_start()`, confirmed via `xxd`) with no track
+   and no video data. Fixed by blocking both signals
+   (`libc::pthread_sigmask(SIG_BLOCK, ..)`) on the calling thread
+   *before* spawning the recording thread, so the blocked mask is
+   inherited and PipeWire's handler is the only possible consumer.
 
 ### 5. Polish - not yet done
 - Handle portal cancellation cleanly (same error-surfacing pattern
