@@ -7,7 +7,7 @@ use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mp4::{AvcConfig, Mp4Config, Mp4Sample, Mp4Writer, TrackConfig};
 use openh264::OpenH264API;
@@ -25,6 +25,9 @@ use pw::stream::StreamFlags;
 const TRACK_ID: u32 = 1;
 /// MP4 timescale: units per second used for sample timestamps/durations.
 const TIMESCALE: u32 = 1000;
+/// Minimum time between processed frames (see the `process` callback for
+/// why this matters beyond just capping the output frame rate).
+const MIN_FRAME_INTERVAL: Duration = Duration::from_millis(1000 / 30);
 
 /// Which interleaved pixel layout PipeWire negotiated - both map directly
 /// onto an `openh264` slice-wrapper type, so no manual RGB/BGR channel
@@ -45,6 +48,7 @@ struct EncodeState {
     size: (usize, usize),
     track_added: bool,
     start: Option<Instant>,
+    last_frame_at: Option<Instant>,
     frame_count: u32,
     error: Option<String>,
 }
@@ -105,6 +109,7 @@ pub fn record(fd: OwnedFd, node_id: u32, size: (i32, i32), output: &Path) -> Res
         size: (size.0.max(0) as usize, size.1.max(0) as usize),
         track_added: false,
         start: None,
+        last_frame_at: None,
         frame_count: 0,
         error: None,
     }));
@@ -163,6 +168,23 @@ pub fn record(fd: OwnedFd, node_id: u32, size: (i32, i32), output: &Path) -> Res
             if state.error.is_some() {
                 return;
             }
+            // Throttle to MIN_FRAME_INTERVAL regardless of how fast PipeWire
+            // delivers buffers or how slow encoding is: without this, a
+            // source that can outpace the encoder (observed at 4K, where
+            // openh264 can't sustain real time) keeps this thread
+            // permanently busy inside encode_frame, starving the event
+            // loop's own signal handling - Ctrl-C stopped responding
+            // entirely under that load. Dequeuing-and-dropping a frame is
+            // cheap, so skipped frames still return to the event loop
+            // quickly, giving the pending SIGINT/SIGTERM a chance to be
+            // serviced on the very next iteration.
+            let due = state
+                .last_frame_at
+                .is_none_or(|last| last.elapsed() >= MIN_FRAME_INTERVAL);
+            if !due {
+                return;
+            }
+            state.last_frame_at = Some(Instant::now());
             let Some(layout) = state.layout else { return };
             if let Err(err) = encode_frame(&mut state, layout, stride, bytes) {
                 state.error = Some(err);
@@ -430,6 +452,7 @@ mod tests {
             size: (WIDTH, HEIGHT),
             track_added: false,
             start: None,
+            last_frame_at: None,
             frame_count: 0,
             error: None,
         };
