@@ -68,6 +68,19 @@ async fn record(output: Option<String>) {
         }
     };
 
+    // Block SIGINT/SIGTERM on this thread *before* spawning the recording
+    // thread below, so the new thread inherits the blocked mask too and
+    // `recording::record`'s own signal handling (via pipewire's signalfd
+    // mechanism, which needs the signal blocked at the OS level to work at
+    // all) is the only thing that ever sees them - otherwise the kernel is
+    // just as free to deliver the signal to this thread instead, whose
+    // default disposition (terminate immediately) can race with and beat
+    // pipewire's handling, skipping the clean-shutdown/`write_end` path
+    // entirely. Found this the hard way: an unpatched Ctrl-C left a
+    // 48-byte MP4 with no track and no video data, `write_end` never
+    // called.
+    block_interrupt_signals();
+
     let path = std::path::PathBuf::from(output);
     let thread_path = path.clone();
     // `pipewire-rs` asserts its mainloop is created on a thread literally
@@ -96,5 +109,20 @@ async fn record(output: Option<String>) {
             eprintln!("recording failed: {err}");
             std::process::exit(1);
         }
+    }
+}
+
+/// Blocks `SIGINT`/`SIGTERM` on the calling thread (and, by inheritance,
+/// any thread spawned afterward) at the OS level.
+fn block_interrupt_signals() {
+    // SAFETY: `set` is a plain POD struct fully initialized by
+    // `sigemptyset` before any other field is read, and the pointers
+    // passed to `pthread_sigmask` are valid for the duration of the call.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
     }
 }

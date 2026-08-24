@@ -2337,6 +2337,7 @@ name = "prtsc"
 version = "0.1.0"
 dependencies = [
  "ashpd",
+ "libc",
  "mp4",
  "openh264",
  "pipewire",
