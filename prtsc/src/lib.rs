@@ -68,28 +68,14 @@ async fn record(output: Option<String>) {
         }
     };
 
-    // Block SIGINT/SIGTERM on this thread *before* spawning the recording
-    // thread below, so the new thread inherits the blocked mask too and
-    // `recording::record`'s own signal handling (via pipewire's signalfd
-    // mechanism, which needs the signal blocked at the OS level to work at
-    // all) is the only thing that ever sees them - otherwise the kernel is
-    // just as free to deliver the signal to this thread instead, whose
-    // default disposition (terminate immediately) can race with and beat
-    // pipewire's handling, skipping the clean-shutdown/`write_end` path
-    // entirely. Found this the hard way: an unpatched Ctrl-C left a
-    // 48-byte MP4 with no track and no video data, `write_end` never
-    // called.
-    block_interrupt_signals();
-
     let path = std::path::PathBuf::from(output);
+    let (sender, stop_rx) = pipewire::channel::channel::<recording::Terminate>();
     let thread_path = path.clone();
     // `pipewire-rs` asserts its mainloop is created on a thread literally
     // named "main" (see `utils::assert_main_thread`), which a
     // `tokio::task::spawn_blocking` worker (named "tokio-rt-worker") isn't -
     // discovered the hard way when this panicked on a real recording
-    // attempt. A plain `std::thread` explicitly named "main" satisfies it;
-    // blocking on `.join()` here is fine since this `current_thread`
-    // runtime has nothing else to do concurrently anyway.
+    // attempt. A plain `std::thread` explicitly named "main" satisfies it.
     let handle = std::thread::Builder::new()
         .name("main".to_string())
         .spawn(move || {
@@ -98,10 +84,40 @@ async fn record(output: Option<String>) {
             // cast - so it's moved into this closure whole rather than
             // just its fields.
             let session = session;
-            recording::record(session.fd, session.node_id, session.size, &thread_path)
+            recording::record(
+                session.fd,
+                session.node_id,
+                session.size,
+                &thread_path,
+                stop_rx,
+            )
         })
         .expect("failed to spawn recording thread");
-    let result = handle.join().expect("recording thread panicked");
+
+    // `.join()` is blocking, so it's wrapped in `spawn_blocking` to make it
+    // awaitable - letting it race against Ctrl-C/SIGTERM below rather than
+    // relying on OS signal delivery, which real testing found to be
+    // genuinely unreliable across threads (see the implementation plan):
+    // whichever thread the kernel happened to deliver the signal to could
+    // race with and beat pipewire's own handling, skipping the clean
+    // shutdown/`write_end` path entirely.
+    let join_task =
+        tokio::task::spawn_blocking(move || handle.join().expect("recording thread panicked"));
+    tokio::pin!(join_task);
+
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("failed to install SIGTERM handler");
+    let result = tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            let _ = sender.send(recording::Terminate);
+            (&mut join_task).await.expect("join task panicked")
+        }
+        _ = sigterm.recv() => {
+            let _ = sender.send(recording::Terminate);
+            (&mut join_task).await.expect("join task panicked")
+        }
+        result = &mut join_task => result.expect("join task panicked"),
+    };
 
     match result {
         Ok(()) => println!("{}", path.display()),
@@ -109,20 +125,5 @@ async fn record(output: Option<String>) {
             eprintln!("recording failed: {err}");
             std::process::exit(1);
         }
-    }
-}
-
-/// Blocks `SIGINT`/`SIGTERM` on the calling thread (and, by inheritance,
-/// any thread spawned afterward) at the OS level.
-fn block_interrupt_signals() {
-    // SAFETY: `set` is a plain POD struct fully initialized by
-    // `sigemptyset` before any other field is read, and the pointers
-    // passed to `pthread_sigmask` are valid for the duration of the call.
-    unsafe {
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, libc::SIGINT);
-        libc::sigaddset(&mut set, libc::SIGTERM);
-        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
     }
 }

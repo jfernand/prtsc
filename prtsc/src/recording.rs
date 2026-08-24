@@ -53,30 +53,35 @@ struct EncodeState {
     error: Option<String>,
 }
 
-/// Runs the capture+encode+mux loop until interrupted (Ctrl-C/SIGTERM),
-/// blocking the calling thread. Meant to be driven via
+/// Sent through a [`pipewire::channel`] to stop a running [`record`] call
+/// from another thread. Used by both the CLI (translating Ctrl-C/SIGTERM,
+/// detected via `tokio::signal` on the async side, into this) and the MCP
+/// server (translating a `stop_recording` tool call into this) - a single
+/// stop mechanism for both, rather than relying on OS signal delivery
+/// racing between threads (which real testing found to be genuinely
+/// unreliable - see the implementation plan).
+pub struct Terminate;
+
+/// Runs the capture+encode+mux loop until a [`Terminate`] message arrives
+/// on `stop_rx`, blocking the calling thread. Meant to be driven via
 /// `tokio::task::spawn_blocking` from async code.
-pub fn record(fd: OwnedFd, node_id: u32, size: (i32, i32), output: &Path) -> Result<(), String> {
+pub fn record(
+    fd: OwnedFd,
+    node_id: u32,
+    size: (i32, i32),
+    output: &Path,
+    stop_rx: pw::channel::Receiver<Terminate>,
+) -> Result<(), String> {
     pw::init();
 
     let main_loop = pw::main_loop::MainLoopRc::new(None).map_err(|err| err.to_string())?;
 
     let weak = main_loop.downgrade();
-    let _sig_int = main_loop
-        .loop_()
-        .add_signal_local(pw::loop_::Signal::INT, move || {
-            if let Some(main_loop) = weak.upgrade() {
-                main_loop.quit();
-            }
-        });
-    let weak = main_loop.downgrade();
-    let _sig_term = main_loop
-        .loop_()
-        .add_signal_local(pw::loop_::Signal::TERM, move || {
-            if let Some(main_loop) = weak.upgrade() {
-                main_loop.quit();
-            }
-        });
+    let _stop_listener = stop_rx.attach(main_loop.loop_(), move |Terminate| {
+        if let Some(main_loop) = weak.upgrade() {
+            main_loop.quit();
+        }
+    });
 
     let context = pw::context::ContextRc::new(&main_loop, None).map_err(|err| err.to_string())?;
     let core = context
