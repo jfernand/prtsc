@@ -156,12 +156,16 @@ real PipeWire session is available.
 
 **Verify:** confirmed - `prtsc record` run to completion, Ctrl-C'd
 partway through, produced a playable file with the path printed on
-stdout.
+stdout. Prints `Recording to <path>...` (stderr) once the output file
+is created and setup begins, and `Wrote N frames, WxH, D.Ds, S KiB ->
+<path>` (stderr) after `write_end()` succeeds - stdout stays reserved
+for just the final path, matching `capture`'s convention.
 
 ## Bugs found via real-session testing
 
-Two real bugs, neither catchable by the unit test or code review since
-both are specific to actually running PipeWire's mainloop for real:
+Five real bugs, none catchable by the unit test or code review since
+all are specific to actually running PipeWire's mainloop for real -
+found across two rounds of live testing on a real desktop session:
 
 1. **Thread-naming panic.** `pipewire-rs` asserts its mainloop is
    created on a thread literally named `"main"`
@@ -187,6 +191,47 @@ both are specific to actually running PipeWire's mainloop for real:
    (`libc::pthread_sigmask(SIG_BLOCK, ..)`) on the calling thread
    *before* spawning the recording thread, so the blocked mask is
    inherited and PipeWire's handler is the only possible consumer.
+
+3. **Framerate negotiation failure.** Added a `VideoFramerate` SPA
+   property to the `EnumFormat` pod (min `1/1`, max `30/1`) to address
+   bug 4 below, but excluding `0/1` ("variable, damage-driven, no fixed
+   rate" - what screen-capture sources commonly report) meant no valid
+   intersection existed with what the actual producer offered.
+   Negotiation failed outright: `state_changed` went straight to
+   `Paused -> Error("no more input formats")`, `process` never got
+   called once, size/pixel-format debug logging never even fired.
+   Diagnosed by temporarily instrumenting `state_changed`/`param_changed`/
+   `process` with `eprintln!` (removed once the root cause was clear).
+   Fixed by setting the minimum to `0/1` instead.
+
+4. **CPU-saturated mainloop starves signal handling.** At a demanding
+   resolution (3840x2160), `openh264` encoding a frame can take long
+   enough that PipeWire keeps handing over new buffers faster than they
+   can be drained - the recording thread stays permanently busy inside
+   `encode_frame`, with no idle moment left to return to its event loop
+   and notice the (already-pending, per bug 2's fix) signalfd. Observed
+   directly: `main` thread pinned at ~100% CPU, unresponsive to `kill
+   -INT` for 10+ seconds, no `Wrote ...` line ever appearing. Mitigated
+   by throttling actual encode work to `MIN_FRAME_INTERVAL` (33ms, ~30
+   fps) regardless of how fast buffers arrive - frames arriving faster
+   than that are dequeued and dropped immediately (cheap), so the thread
+   returns to its event loop often enough for pending signals to be
+   serviced promptly even when encoding can't keep up with the source.
+
+5. **Debug builds encode dramatically slower.** Even with bug 4's
+   throttle, a `cargo build` (dev profile) recording at 3840x2160 still
+   pinned the encoding thread at 100% CPU and stayed unresponsive to
+   Ctrl-C for 10+ seconds - because `openh264-sys2`'s `build.rs` uses
+   the `cc` crate's default behavior of reading Cargo's `OPT_LEVEL`/
+   `DEBUG` env vars, compiling the vendored OpenH264 C++ source with
+   *no* optimizations in a dev build. A `cargo build --release` of the
+   exact same scenario dropped CPU to ~70% and responded to Ctrl-C
+   within ~2 seconds, producing a real 368-frame, 24.7s recording -
+   confirmed valid and fully decodable with `ffprobe`/`ffmpeg`.
+   **Practical implication: always use `--release` for `prtsc record`
+   beyond trivial low-resolution/short use, especially at resolutions
+   above 1080p** - not just for speed, but because a debug build can
+   make the tool's own Ctrl-C handling sluggish enough to look hung.
 
 ### 5. Polish - not yet done
 - Handle portal cancellation cleanly (same error-surfacing pattern
