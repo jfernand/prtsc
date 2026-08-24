@@ -244,6 +244,23 @@ fn enum_format_pod(size: (i32, i32)) -> Result<Vec<u8>, String> {
                 height: size.1.max(1) as u32,
             }
         ),
+        // Without a cap, PipeWire is free to deliver frames as fast as the
+        // compositor renders them - observed pegging encoding at ~100% CPU
+        // continuously with no framerate offered at all. 30fps is plenty for
+        // a screen recording. The minimum must include 0/1 ("variable,
+        // damage-driven, no fixed rate") - screen-capture sources commonly
+        // only offer that, and excluding it (an earlier version of this
+        // pod had min = 1/1) made negotiation fail outright with "no more
+        // input formats".
+        property!(
+            FormatProperties::VideoFramerate,
+            Choice,
+            Range,
+            Fraction,
+            pw::spa::utils::Fraction { num: 30, denom: 1 },
+            pw::spa::utils::Fraction { num: 0, denom: 1 },
+            pw::spa::utils::Fraction { num: 30, denom: 1 }
+        ),
     );
     let values = PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj))
         .map_err(|err| format!("failed to serialize format pod: {err:?}"))?
