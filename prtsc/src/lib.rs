@@ -69,19 +69,26 @@ async fn record(output: Option<String>) {
     };
 
     let path = std::path::PathBuf::from(output);
-    let result = {
-        let path = path.clone();
-        tokio::task::spawn_blocking(move || {
+    let thread_path = path.clone();
+    // `pipewire-rs` asserts its mainloop is created on a thread literally
+    // named "main" (see `utils::assert_main_thread`), which a
+    // `tokio::task::spawn_blocking` worker (named "tokio-rt-worker") isn't -
+    // discovered the hard way when this panicked on a real recording
+    // attempt. A plain `std::thread` explicitly named "main" satisfies it;
+    // blocking on `.join()` here is fine since this `current_thread`
+    // runtime has nothing else to do concurrently anyway.
+    let handle = std::thread::Builder::new()
+        .name("main".to_string())
+        .spawn(move || {
             // `session` (specifically its ashpd `Session`) must stay alive
             // for the whole recording - dropping it ends the portal-side
             // cast - so it's moved into this closure whole rather than
             // just its fields.
             let session = session;
-            recording::record(session.fd, session.node_id, session.size, &path)
+            recording::record(session.fd, session.node_id, session.size, &thread_path)
         })
-        .await
-        .expect("recording thread panicked")
-    };
+        .expect("failed to spawn recording thread");
+    let result = handle.join().expect("recording thread panicked");
 
     match result {
         Ok(()) => println!("{}", path.display()),
