@@ -45,6 +45,7 @@ struct EncodeState {
     size: (usize, usize),
     track_added: bool,
     start: Option<Instant>,
+    frame_count: u32,
     error: Option<String>,
 }
 
@@ -79,6 +80,7 @@ pub fn record(fd: OwnedFd, node_id: u32, size: (i32, i32), output: &Path) -> Res
         .map_err(|err| err.to_string())?;
 
     let file = File::create(output).map_err(|err| err.to_string())?;
+    eprintln!("Recording to {}...", output.display());
     let mp4_config = Mp4Config {
         major_brand: str::parse("isom").unwrap(),
         minor_version: 512,
@@ -103,6 +105,7 @@ pub fn record(fd: OwnedFd, node_id: u32, size: (i32, i32), output: &Path) -> Res
         size: (size.0.max(0) as usize, size.1.max(0) as usize),
         track_added: false,
         start: None,
+        frame_count: 0,
         error: None,
     }));
 
@@ -196,6 +199,20 @@ pub fn record(fd: OwnedFd, node_id: u32, size: (i32, i32), output: &Path) -> Res
     }
     let mut writer = state.writer;
     writer.write_end().map_err(|err| err.to_string())?;
+
+    let duration = state.start.map(|start| start.elapsed()).unwrap_or_default();
+    let file_size = std::fs::metadata(output)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let (width, height) = state.size;
+    eprintln!(
+        "Wrote {} frames, {width}x{height}, {:.1}s, {:.1} KiB -> {}",
+        state.frame_count,
+        duration.as_secs_f64(),
+        file_size as f64 / 1024.0,
+        output.display(),
+    );
+
     Ok(())
 }
 
@@ -325,6 +342,7 @@ fn encode_frame(
             },
         )
         .map_err(|err| err.to_string())?;
+    state.frame_count += 1;
 
     Ok(())
 }
@@ -395,6 +413,7 @@ mod tests {
             size: (WIDTH, HEIGHT),
             track_added: false,
             start: None,
+            frame_count: 0,
             error: None,
         };
 
